@@ -24,9 +24,16 @@ struct SessionInner {
     context: Table,
     model: Option<Function>,
     interface: Option<Function>,
-    tools: HashMap<String, Function>,
+    tools: HashMap<String, ToolEntry>,
     context_hooks: Vec<Function>,
     action_hooks: Vec<Function>,
+}
+
+struct ToolEntry {
+    name: String,
+    description: Option<String>,
+    parameters: Table,
+    func: Function,
 }
 
 #[derive(Clone)]
@@ -55,37 +62,69 @@ impl Session {
     }
 
     fn install_default_tools(&mut self, lua: &Lua) -> Result<()> {
-        self.add_tool_value(
+        self.add_tool_spec(
             lua,
             "read_file",
-            lua.create_function(|_, args: Table| {
-                let path: String = args.get("path")?;
-                tools::read_file(path)
+            Some("Read a file from disk".to_string()),
+            tool_schema(lua, &[("path", "string")])?,
+            lua.create_function(|lua, args: Table| {
+                let path = required_tool_string(&args, "read_file", "path")?;
+                tools::read_file(lua, path)
             })?,
         )?;
-        self.add_tool_value(
+        self.add_tool_spec(
             lua,
             "write_file",
-            lua.create_function(|_, args: Table| {
-                let path: String = args.get("path")?;
-                let content: String = args.get("content")?;
-                tools::write_file(path, content)
+            Some("Write a file to disk".to_string()),
+            tool_schema(lua, &[("path", "string"), ("content", "string")])?,
+            lua.create_function(|lua, args: Table| {
+                let path = required_tool_string(&args, "write_file", "path")?;
+                let content = required_tool_string(&args, "write_file", "content")?;
+                tools::write_file(lua, path, content)
             })?,
         )?;
-        self.add_tool_value(
+        self.add_tool_spec(
             lua,
             "bash",
-            lua.create_function(|_, args: Table| {
-                let command: String = args.get("command")?;
-                tools::bash(command)
+            Some("Run a shell command".to_string()),
+            tool_schema(lua, &[("command", "string")])?,
+            lua.create_function(|lua, args: Table| {
+                let command = required_tool_string(&args, "bash", "command")?;
+                tools::bash(lua, command)
             })?,
         )?;
         Ok(())
     }
 
-    fn add_tool_value(&mut self, _lua: &Lua, name: impl Into<String>, func: Function) -> Result<()> {
-        self.inner.borrow_mut().tools.insert(name.into(), func);
+    fn add_tool_spec(
+        &mut self,
+        _lua: &Lua,
+        name: impl Into<String>,
+        description: Option<String>,
+        parameters: Table,
+        func: Function,
+    ) -> Result<()> {
+        let name = name.into();
+        self.register_tool(name, description, parameters, func);
         Ok(())
+    }
+
+    fn register_tool(
+        &self,
+        name: String,
+        description: Option<String>,
+        parameters: Table,
+        func: Function,
+    ) {
+        self.inner.borrow_mut().tools.insert(
+            name.clone(),
+            ToolEntry {
+                name,
+                description,
+                parameters,
+                func,
+            },
+        );
     }
 
     fn build_history_table(&self, lua: &Lua) -> Result<Table> {
@@ -115,12 +154,30 @@ impl Session {
         payload.set("history", self.build_history_table(lua)?)?;
         payload.set("context", self.build_context_table(lua)?)?;
 
-        let tools = lua.create_table()?;
-        for key in inner.tools.keys() {
-            tools.set(key.as_str(), true)?;
-        }
-        payload.set("tools", tools)?;
+        payload.set("tools", self.build_tool_specs_table(lua)?)?;
         Ok(payload)
+    }
+
+    fn build_tool_specs_table(&self, lua: &Lua) -> Result<Table> {
+        let inner = self.inner.borrow();
+        let table = lua.create_table()?;
+        let mut tools: Vec<&ToolEntry> = inner.tools.values().collect();
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+
+        for (idx, tool) in tools.into_iter().enumerate() {
+            let spec = lua.create_table()?;
+            spec.set("type", "function")?;
+            let function = lua.create_table()?;
+            function.set("name", tool.name.as_str())?;
+            if let Some(description) = &tool.description {
+                function.set("description", description.as_str())?;
+            }
+            function.set("parameters", tool.parameters.clone())?;
+            spec.set("function", function)?;
+            table.set(idx + 1, spec)?;
+        }
+
+        Ok(table)
     }
 
     fn push_history(&self, role: impl Into<String>, content: impl Into<String>) {
@@ -169,14 +226,22 @@ impl Session {
         provider.call(payload)
     }
 
-    fn call_tool(&self, lua: &Lua, name: &str, args: Value) -> Result<Value> {
+    fn invoke_tool(&self, _lua: &Lua, name: &str, args: Value) -> Result<Value> {
         let tool = {
             let inner = self.inner.borrow();
-            inner.tools.get(name).cloned()
+            inner.tools.get(name).map(|entry| entry.func.clone())
         }
         .ok_or_else(|| mlua::Error::RuntimeError(format!("tool `{name}` is not registered")))?;
-        let _ = lua;
         tool.call(args)
+    }
+
+    fn call_tool_with_hooks(&self, lua: &Lua, name: &str, args: Value) -> Result<Value> {
+        let result = self.invoke_tool(lua, name, args)?;
+        let action = lua.create_table()?;
+        action.set("kind", "tool")?;
+        action.set("name", name)?;
+        self.run_action_hooks(lua, action, result.clone())?;
+        Ok(result)
     }
 
     fn interpret_model_output(&self, lua: &Lua, value: Value) -> Result<StepResult> {
@@ -197,13 +262,9 @@ impl Session {
                     Some("tool") => {
                         let name: String = table.get("name")?;
                         let args: Value = table.get("args").unwrap_or(Value::Nil);
-                        let result = self.call_tool(lua, &name, args)?;
+                        let result = self.call_tool_with_hooks(lua, &name, args)?;
                         let result_text = value_to_text(lua, &result)?;
                         self.push_history(format!("tool:{name}"), result_text.clone());
-                        let action = lua.create_table()?;
-                        action.set("kind", "tool")?;
-                        action.set("name", name.as_str())?;
-                        self.run_action_hooks(lua, action, result)?;
                         Ok(StepResult::Tool {
                             name,
                             result: result_text,
@@ -223,6 +284,79 @@ impl Session {
             }
         }
     }
+
+    fn tool_specs(&self, lua: &Lua) -> Result<Table> {
+        self.build_tool_specs_table(lua)
+    }
+
+    fn add_tool_from_lua(&self, lua: &Lua, spec: ToolSpecInput, func: Function) -> Result<()> {
+        let _ = lua;
+        self.register_tool(spec.name, spec.description, spec.parameters, func);
+        Ok(())
+    }
+
+    fn tool_name_from_value(&self, value: Value) -> Result<String> {
+        match value {
+            Value::String(name) => Ok(name.to_str()?.to_owned()),
+            Value::Integer(name) => Ok(name.to_string()),
+            Value::Number(name) => Ok(name.to_string()),
+            other => Err(mlua::Error::RuntimeError(format!(
+                "tool call name must be a string, got {other:?}"
+            ))),
+        }
+    }
+}
+
+struct ToolSpecInput {
+    name: String,
+    description: Option<String>,
+    parameters: Table,
+}
+
+impl ToolSpecInput {
+    fn from_table(lua: &Lua, table: Table) -> Result<Self> {
+        let name: String = table
+            .get("name")
+            .map_err(|_| mlua::Error::RuntimeError("tool spec missing `name`".into()))?;
+        let description: Option<String> = table.get("description").ok();
+        let parameters = match table.get::<Option<Table>>("parameters").ok().flatten() {
+            Some(parameters) => parameters,
+            None => tool_schema(lua, &[])?,
+        };
+        Ok(Self {
+            name,
+            description,
+            parameters,
+        })
+    }
+}
+
+fn tool_schema(lua: &Lua, fields: &[(&str, &str)]) -> Result<Table> {
+    let schema = lua.create_table()?;
+    schema.set("type", "object")?;
+    let properties = lua.create_table()?;
+    let required = lua.create_table()?;
+
+    for (idx, (name, ty)) in fields.iter().enumerate() {
+        let field = lua.create_table()?;
+        field.set("type", *ty)?;
+        properties.set(*name, field)?;
+        required.set(idx + 1, *name)?;
+    }
+
+    schema.set("properties", properties)?;
+    schema.set("required", required)?;
+    schema.set("additionalProperties", false)?;
+    Ok(schema)
+}
+
+fn required_tool_string(args: &Table, tool: &str, field: &str) -> Result<String> {
+    args.get::<Option<String>>(field)?
+        .ok_or_else(|| {
+            mlua::Error::RuntimeError(format!(
+                "tool `{tool}` is missing required string argument `{field}`"
+            ))
+        })
 }
 
 #[derive(Debug, Clone)]
@@ -264,6 +398,7 @@ impl UserData for Session {
             }
             Ok(table)
         });
+        methods.add_method("tool_specs", |lua, this, ()| this.tool_specs(lua));
 
         methods.add_method_mut("set_model", |_lua, this, func: Function| {
             this.inner.borrow_mut().model = Some(func);
@@ -285,9 +420,29 @@ impl UserData for Session {
             interface.call::<()>(payload)
         });
 
-        methods.add_method_mut("add_tool", |_lua, this, (name, func): (String, Function)| {
-            this.inner.borrow_mut().tools.insert(name, func);
+        methods.add_method_mut("add_tool", |lua, this, (spec, func): (Value, Function)| {
+            match spec {
+                Value::String(name) => {
+                    let name = name.to_str()?.to_owned();
+                    let parameters = tool_schema(lua, &[])?;
+                    this.register_tool(name, None, parameters, func);
+                }
+                Value::Table(table) => {
+                    let spec = ToolSpecInput::from_table(lua, table)?;
+                    this.add_tool_from_lua(lua, spec, func)?;
+                }
+                other => {
+                    return Err(mlua::Error::RuntimeError(format!(
+                        "add_tool expects a string or table spec, got {other:?}"
+                    )));
+                }
+            }
             Ok(())
+        });
+
+        methods.add_method("call_tool", |lua, this, (name, args): (Value, Option<Value>)| {
+            let name = this.tool_name_from_value(name)?;
+            this.call_tool_with_hooks(lua, &name, args.unwrap_or(Value::Nil))
         });
 
         methods.add_method_mut("remove_tool", |_, this, name: String| {
@@ -313,17 +468,23 @@ impl UserData for Session {
         methods.add_method("step", |lua, this, ()| this.step_once(lua));
 
         methods.add_method("run", |lua, this, max_steps: Option<u32>| -> Result<String> {
-            let max_steps = max_steps.unwrap_or(32);
-            for _ in 0..max_steps {
+            let mut steps = 0u32;
+            loop {
+                if let Some(limit) = max_steps {
+                    if steps >= limit {
+                        return Err(mlua::Error::RuntimeError(
+                            "session did not finish within the configured step limit".into(),
+                        ));
+                    }
+                }
+
                 let step = this.step_once(lua)?;
                 let kind: Option<String> = step.get("kind").ok();
                 if kind.as_deref() == Some("final") {
                     return step.get("content");
                 }
+                steps += 1;
             }
-            Err(mlua::Error::RuntimeError(
-                "session did not finish within the configured step limit".into(),
-            ))
         });
     }
 }

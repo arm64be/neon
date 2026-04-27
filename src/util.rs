@@ -29,9 +29,6 @@ fn load_args(lua: &Lua) -> Result<Vec<String>> {
             return args.sequence_values::<String>().collect();
         }
     }
-    if let Ok(args) = globals.get::<Table>("arg") {
-        return args.sequence_values::<String>().collect();
-    }
     Ok(Vec::new())
 }
 

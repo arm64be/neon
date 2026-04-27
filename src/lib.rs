@@ -1,22 +1,56 @@
-pub mod session;
 pub mod net;
-pub mod util;
+pub mod runtime;
+pub mod session;
 pub mod tools;
+pub mod util;
 
 use mlua::{Lua, LuaOptions, Result, StdLib, Table};
 
-pub fn create_lua() -> Result<Lua> {
-    let lua = Lua::new_with(StdLib::ALL_SAFE, LuaOptions::default())?;
-    register_module(&lua)?;
-    Ok(lua)
+pub struct Neon {
+    lua: Lua,
+}
+
+impl Neon {
+    pub fn new() -> Result<Self> {
+        let lua = Lua::new_with(StdLib::ALL_SAFE ^ StdLib::COROUTINE, LuaOptions::default())?;
+        let runtime = runtime::new_runtime()?;
+        runtime::install(&lua, runtime);
+        register_module(&lua)?;
+        Ok(Self { lua })
+    }
+
+    pub fn lua(&self) -> &Lua {
+        &self.lua
+    }
+
+    pub fn set_args(&self, args: &[String]) -> Result<()> {
+        let module: Table = self.lua.globals().get("neon")?;
+        let table = self.lua.create_table()?;
+        for (idx, arg) in args.iter().enumerate() {
+            table.set(idx + 1, arg.as_str())?;
+        }
+        module.set("args", table)?;
+        Ok(())
+    }
+
+    pub fn exec_source(&self, source: &str, name: &str) -> Result<()> {
+        self.lua.load(source).set_name(name).exec()
+    }
+
+    pub fn shutdown(&self) -> Result<()> {
+        let hooks = runtime::take_shutdown_hooks(&self.lua);
+        for hook_key in hooks {
+            let hook: mlua::Function = self.lua.registry_value(&hook_key)?;
+            hook.call::<()>(())?;
+        }
+        Ok(())
+    }
 }
 
 pub fn register_module(lua: &Lua) -> Result<Table> {
     let module = lua.create_table()?;
 
-    let new_session = lua.create_function(|lua, name: Option<String>| {
-        session::Session::new(lua, name)
-    })?;
+    let new_session = lua.create_function(|lua, name: Option<String>| session::Session::new(lua, name))?;
     module.set("new_session", new_session)?;
 
     let util = lua.create_table()?;
@@ -50,8 +84,9 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
     )?;
     module.set("json", json)?;
 
-    let net = lua.create_table()?;
-    net.set(
+    let tokio_table = lua.create_table()?;
+    tokio_table.set("sleep", lua.create_function(|lua, ms: u64| crate::net::sleep(lua, ms))?)?;
+    tokio_table.set(
         "http",
         lua.create_function(|lua, (method, url, headers, params, body): (
             String,
@@ -61,7 +96,7 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
             Option<mlua::Value>,
         )| crate::net::http(lua, method, url, headers, params, body))?,
     )?;
-    net.set(
+    tokio_table.set(
         "http_stream",
         lua.create_function(
             |lua,
@@ -75,51 +110,44 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
             )| crate::net::http_stream(lua, method, url, headers, params, body, on_line),
         )?,
     )?;
-    module.set("net", net)?;
+    module.set("tokio", tokio_table.clone())?;
+    module.set("net", tokio_table.clone())?;
 
-    module.set("read_file", lua.create_function(|_, path: String| tools::read_file(path))?)?;
-    module.set(
+    let tools_table = lua.create_table()?;
+    tools_table.set(
+        "read_file",
+        lua.create_function(|lua, path: String| tools::read_file(lua, path))?,
+    )?;
+    tools_table.set(
         "write_file",
-        lua.create_function(|_, (path, content): (String, String)| tools::write_file(path, content))?,
+        lua.create_function(|lua, (path, content): (String, String)| tools::write_file(lua, path, content))?,
     )?;
-    module.set("bash", lua.create_function(|_, command: String| tools::bash(command))?)?;
-    module.set(
-        "env",
-        lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?,
-    )?;
+    tools_table.set("bash", lua.create_function(|lua, command: String| tools::bash(lua, command))?)?;
+    module.set("tools", tools_table)?;
+    module.set("env", lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?)?;
     module.set(
         "env_or",
-        lua.create_function(|_, (name, default): (String, String)| {
-            Ok(std::env::var(name).unwrap_or(default))
-        })?,
+        lua.create_function(|_, (name, default): (String, String)| Ok(std::env::var(name).unwrap_or(default)))?,
     )?;
+
+    let lifecycle = lua.create_table()?;
+    lifecycle.set(
+        "on_shutdown",
+        lua.create_function(|lua, func: mlua::Function| runtime::add_shutdown_hook(lua, func))?,
+    )?;
+    module.set("lifecycle", lifecycle)?;
 
     let globals = lua.globals();
     globals.set("neon", module.clone())?;
     let args = lua.create_table()?;
-    globals.set("arg", args.clone())?;
     module.set("args", args.clone())?;
 
     if let Ok(package) = globals.get::<Table>("package") {
         if let Ok(preload) = package.get::<Table>("preload") {
             let module_clone = module.clone();
-            preload.set(
-                "neon",
-                lua.create_function(move |_, ()| Ok(module_clone.clone()))?,
-            )?;
+            preload.set("neon", lua.create_function(move |_, ()| Ok(module_clone.clone()))?)?;
         }
     }
 
     Ok(module)
-}
-
-pub fn set_args(lua: &Lua, args: &[String]) -> Result<()> {
-    let module: Table = lua.globals().get("neon")?;
-    let table = lua.create_table()?;
-    for (idx, arg) in args.iter().enumerate() {
-        table.set(idx + 1, arg.as_str())?;
-    }
-    lua.globals().set("arg", table.clone())?;
-    module.set("args", table)?;
-    Ok(())
 }

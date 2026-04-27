@@ -1,13 +1,12 @@
-use std::io::{BufRead, BufReader};
-
+use futures_util::StreamExt;
 use mlua::{Function, Lua, Result, Table, Value};
 use reqwest::{
-    blocking::{Client, Response},
     header::{HeaderMap, HeaderName, HeaderValue},
-    Method, Url,
+    Client, Method, Url,
 };
+use std::time::Duration;
 
-use crate::util;
+use crate::{runtime, util};
 
 fn parse_headers(table: Option<Table>) -> Result<HeaderMap> {
     let mut headers = HeaderMap::new();
@@ -81,7 +80,7 @@ fn body_to_bytes(lua: &Lua, body: Option<Value>) -> Result<Option<Vec<u8>>> {
     }
 }
 
-fn response_to_table(lua: &Lua, response: Response) -> Result<mlua::Value> {
+async fn response_to_table(lua: &Lua, response: reqwest::Response) -> Result<mlua::Value> {
     let status = response.status().as_u16() as i64;
     let headers = lua.create_table()?;
     for (key, value) in response.headers().iter() {
@@ -95,6 +94,7 @@ fn response_to_table(lua: &Lua, response: Response) -> Result<mlua::Value> {
     }
     let body = response
         .text()
+        .await
         .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
     let table = lua.create_table()?;
     table.set("status", status)?;
@@ -103,14 +103,14 @@ fn response_to_table(lua: &Lua, response: Response) -> Result<mlua::Value> {
     Ok(mlua::Value::Table(table))
 }
 
-fn request(
+async fn request(
     lua: &Lua,
     method: String,
     url: String,
     headers: Option<Table>,
     params: Option<Table>,
     body: Option<Value>,
-) -> Result<reqwest::blocking::RequestBuilder> {
+) -> Result<reqwest::RequestBuilder> {
     let client = Client::new();
     let url = apply_params(url.parse::<Url>().map_err(|err| mlua::Error::RuntimeError(err.to_string()))?, params)?;
     let headers = parse_headers(headers)?;
@@ -133,10 +133,14 @@ pub fn http(
     params: Option<Table>,
     body: Option<Value>,
 ) -> Result<mlua::Value> {
-    let response = request(lua, method, url, headers, params, body)?
-        .send()
-        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
-    response_to_table(lua, response)
+    runtime::block_on(lua, async move {
+        let response = request(lua, method, url, headers, params, body)
+            .await?
+            .send()
+            .await
+            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+        response_to_table(lua, response).await
+    })
 }
 
 pub fn http_stream(
@@ -148,41 +152,68 @@ pub fn http_stream(
     body: Option<Value>,
     on_line: Function,
 ) -> Result<mlua::Value> {
-    let response = request(lua, method, url, headers, params, body)?
-        .send()
-        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
-
-    let status = response.status().as_u16() as i64;
-    let response_headers = lua.create_table()?;
-    for (key, value) in response.headers().iter() {
-        response_headers.set(
-            key.as_str(),
-            value
-                .to_str()
-                .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?
-                .to_owned(),
-        )?;
-    }
-
-    let mut reader = BufReader::new(response);
-    let mut line = String::new();
-    loop {
-        line.clear();
-        let read = reader
-            .read_line(&mut line)
+    runtime::block_on(lua, async move {
+        let response = request(lua, method, url, headers, params, body)
+            .await?
+            .send()
+            .await
             .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
-        if read == 0 {
-            break;
-        }
-        let line = line.trim_end_matches(&['\r', '\n'][..]).to_string();
-        let keep_going: Option<bool> = on_line.call(line)?;
-        if matches!(keep_going, Some(false)) {
-            break;
-        }
-    }
 
-    let table = lua.create_table()?;
-    table.set("status", status)?;
-    table.set("headers", response_headers)?;
-    Ok(mlua::Value::Table(table))
+        let status = response.status().as_u16() as i64;
+        let response_headers = lua.create_table()?;
+        for (key, value) in response.headers().iter() {
+            response_headers.set(
+                key.as_str(),
+                value
+                    .to_str()
+                    .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?
+                    .to_owned(),
+            )?;
+        }
+
+        let mut buffer = String::new();
+        let mut stream = response.bytes_stream();
+        let mut stop = false;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk.map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+            buffer.push_str(&String::from_utf8_lossy(&chunk));
+
+            while let Some(pos) = buffer.find('\n') {
+                let mut line = buffer.drain(..=pos).collect::<String>();
+                if line.ends_with('\n') {
+                    line.pop();
+                }
+                if line.ends_with('\r') {
+                    line.pop();
+                }
+                let keep_going: Option<bool> = on_line.call(line)?;
+                if matches!(keep_going, Some(false)) {
+                    stop = true;
+                    break;
+                }
+            }
+            if stop {
+                break;
+            }
+        }
+
+        if !buffer.is_empty() && !stop {
+            let keep_going: Option<bool> = on_line.call(buffer)?;
+            if matches!(keep_going, Some(false)) {
+                // caller stopped on the final partial line
+            }
+        }
+
+        let table = lua.create_table()?;
+        table.set("status", status)?;
+        table.set("headers", response_headers)?;
+        Ok(mlua::Value::Table(table))
+    })
+}
+
+pub fn sleep(lua: &Lua, ms: u64) -> Result<()> {
+    runtime::block_on(lua, async move {
+        tokio::time::sleep(Duration::from_millis(ms)).await;
+        Ok(())
+    })
 }
