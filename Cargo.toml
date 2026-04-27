@@ -1,0 +1,21 @@
+[package]
+name = "neon"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+mlua = { version = "0.10", features = ["lua54", "vendored"] }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+serde_json = "1"
+tokio = { version = "1", features = ["fs", "process", "rt", "macros"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[lib]
+name = "neon"
+path = "src/lib.rs"
+
+[[bin]]
+name = "neon"
+path = "src/main.rs"
