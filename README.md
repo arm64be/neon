@@ -3,6 +3,8 @@
 Minimal Rust + Lua agent harness.
 
 Run `cargo run` from the repo root to load [`config.lua`](/home/mel/Projects/ML/neon/config.lua).
+If `NEON_CONFIG_ROOT` is set, Neon loads `config.lua` from that directory instead.
+If a `.env` file exists alongside `config.lua`, Neon loads additive `KEY=VALUE` pairs from it before running the config.
 
 ## Shape
 
@@ -19,6 +21,8 @@ Run `cargo run` from the repo root to load [`config.lua`](/home/mel/Projects/ML/
 - `neon.tokio.http(...)`, `neon.tokio.http_stream(...)`, and `neon.tokio.sleep(ms)` cover async-backed utilities.
 - `neon.lifecycle.on_shutdown(fn)` registers shutdown hooks.
 - `neon.args` exposes CLI arguments passed after the script path.
+- `neon.config_root` exposes the active config root directory.
+- Lua `require(...)` can load sibling `.lua` files from the config root.
 - Lua coroutines are not loaded in the default VM.
 
 ## Lua API

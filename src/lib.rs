@@ -4,6 +4,8 @@ pub mod session;
 pub mod tools;
 pub mod util;
 
+use std::path::Path;
+
 use mlua::{Lua, LuaOptions, Result, StdLib, Table};
 
 pub struct Neon {
@@ -30,6 +32,22 @@ impl Neon {
             table.set(idx + 1, arg.as_str())?;
         }
         module.set("args", table)?;
+        Ok(())
+    }
+
+    pub fn set_config_root(&self, root: impl AsRef<Path>) -> Result<()> {
+        let root = root.as_ref();
+        let module: Table = self.lua.globals().get("neon")?;
+        module.set("config_root", root.to_string_lossy().as_ref())?;
+
+        let package: Table = self.lua.globals().get("package")?;
+        let current_path: String = package.get("path")?;
+        let prefix = format!(
+            "{}/?.lua;{}/?/init.lua;",
+            root.to_string_lossy(),
+            root.to_string_lossy()
+        );
+        package.set("path", format!("{prefix}{current_path}"))?;
         Ok(())
     }
 
