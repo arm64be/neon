@@ -68,11 +68,19 @@ impl Neon {
 pub fn register_module(lua: &Lua) -> Result<Table> {
     let module = lua.create_table()?;
 
-    let new_session = lua.create_function(|lua, name: Option<String>| session::Session::new(lua, name))?;
+    let new_session =
+        lua.create_function(|lua, name: Option<String>| session::Session::new(lua, name))?;
     module.set("new_session", new_session)?;
+    module.set(
+        "set_session_db",
+        lua.create_function(|lua, path: String| session::Session::set_session_db(lua, path))?,
+    )?;
 
     let util = lua.create_table()?;
-    util.set("trim_string", lua.create_function(|_, value: String| Ok(crate::util::trim_string(value)))?)?;
+    util.set(
+        "trim_string",
+        lua.create_function(|_, value: String| Ok(crate::util::trim_string(value)))?,
+    )?;
     util.set(
         "arg_flag",
         lua.create_function(|lua, name: String| crate::util::arg_flag(lua, name))?,
@@ -103,16 +111,22 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
     module.set("json", json)?;
 
     let tokio_table = lua.create_table()?;
-    tokio_table.set("sleep", lua.create_function(|lua, ms: u64| crate::net::sleep(lua, ms))?)?;
+    tokio_table.set(
+        "sleep",
+        lua.create_function(|lua, ms: u64| crate::net::sleep(lua, ms))?,
+    )?;
     tokio_table.set(
         "http",
-        lua.create_function(|lua, (method, url, headers, params, body): (
-            String,
-            String,
-            Option<Table>,
-            Option<Table>,
-            Option<mlua::Value>,
-        )| crate::net::http(lua, method, url, headers, params, body))?,
+        lua.create_function(
+            |lua,
+             (method, url, headers, params, body): (
+                String,
+                String,
+                Option<Table>,
+                Option<Table>,
+                Option<mlua::Value>,
+            )| crate::net::http(lua, method, url, headers, params, body),
+        )?,
     )?;
     tokio_table.set(
         "http_stream",
@@ -125,7 +139,9 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
                 Option<Table>,
                 Option<mlua::Value>,
                 mlua::Function,
-            )| crate::net::http_stream(lua, method, url, headers, params, body, on_line),
+            )| {
+                crate::net::http_stream(lua, method, url, headers, params, body, on_line)
+            },
         )?,
     )?;
     module.set("tokio", tokio_table.clone())?;
@@ -138,14 +154,24 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
     )?;
     tools_table.set(
         "write_file",
-        lua.create_function(|lua, (path, content): (String, String)| tools::write_file(lua, path, content))?,
+        lua.create_function(|lua, (path, content): (String, String)| {
+            tools::write_file(lua, path, content)
+        })?,
     )?;
-    tools_table.set("bash", lua.create_function(|lua, command: String| tools::bash(lua, command))?)?;
+    tools_table.set(
+        "bash",
+        lua.create_function(|lua, command: String| tools::bash(lua, command))?,
+    )?;
     module.set("tools", tools_table)?;
-    module.set("env", lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?)?;
+    module.set(
+        "env",
+        lua.create_function(|_, name: String| Ok(std::env::var(name).ok()))?,
+    )?;
     module.set(
         "env_or",
-        lua.create_function(|_, (name, default): (String, String)| Ok(std::env::var(name).unwrap_or(default)))?,
+        lua.create_function(|_, (name, default): (String, String)| {
+            Ok(std::env::var(name).unwrap_or(default))
+        })?,
     )?;
 
     let lifecycle = lua.create_table()?;
@@ -163,7 +189,10 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
     if let Ok(package) = globals.get::<Table>("package") {
         if let Ok(preload) = package.get::<Table>("preload") {
             let module_clone = module.clone();
-            preload.set("neon", lua.create_function(move |_, ()| Ok(module_clone.clone()))?)?;
+            preload.set(
+                "neon",
+                lua.create_function(move |_, ()| Ok(module_clone.clone()))?,
+            )?;
         }
     }
 

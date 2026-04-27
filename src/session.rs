@@ -1,17 +1,50 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
+    fs,
+    path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use mlua::{Function, Lua, Result, Table, UserData, UserDataMethods, Value};
+use serde::{Deserialize, Serialize};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
+    Row, SqlitePool,
+};
 
+use crate::runtime;
 use crate::tools;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_SESSION_NAME: AtomicU64 = AtomicU64::new(1);
 
-#[derive(Clone, Debug)]
+fn generate_session_name() -> String {
+    let seq = NEXT_SESSION_NAME.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("session-{nanos:x}-{seq:x}")
+}
+
+fn normalize_session_name(name: Option<String>) -> String {
+    match name {
+        Some(name) if !name.trim().is_empty() => name,
+        _ => generate_session_name(),
+    }
+}
+
+fn sqlite_url(path: &Path) -> Result<SqliteConnectOptions> {
+    let options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true);
+    Ok(options)
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Message {
     pub role: String,
     pub content: String,
@@ -43,10 +76,11 @@ pub struct Session {
 
 impl Session {
     pub fn new(lua: &Lua, name: Option<String>) -> Result<Self> {
+        let name = normalize_session_name(name);
         let mut session = Session {
             inner: Rc::new(RefCell::new(SessionInner {
                 id: NEXT_SESSION_ID.fetch_add(1, Ordering::Relaxed),
-                name,
+                name: Some(name.clone()),
                 history: Vec::new(),
                 context: lua.create_table()?,
                 model: None,
@@ -57,6 +91,7 @@ impl Session {
             })),
         };
 
+        session.load_persisted_history(lua, &name)?;
         session.install_default_tools(lua)?;
         Ok(session)
     }
@@ -94,6 +129,153 @@ impl Session {
             })?,
         )?;
         Ok(())
+    }
+
+    pub fn set_session_db(lua: &Lua, path: String) -> Result<()> {
+        let path = PathBuf::from(path);
+        if path.as_os_str().is_empty() {
+            return Err(mlua::Error::RuntimeError(
+                "session database path cannot be empty".into(),
+            ));
+        }
+
+        if let Some(parent) = path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+            }
+        }
+
+        runtime::block_on(lua, Self::ensure_session_schema(&path))?;
+        runtime::set_session_db_path(lua, path);
+
+        Ok(())
+    }
+
+    async fn open_session_pool(path: &Path) -> Result<SqlitePool> {
+        let options = sqlite_url(path)?;
+        SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options)
+            .await
+            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))
+    }
+
+    async fn ensure_session_schema(path: &Path) -> Result<()> {
+        let pool = Self::open_session_pool(path).await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+                name TEXT PRIMARY KEY NOT NULL,
+                history_json TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+        Ok(())
+    }
+
+    async fn load_history(path: &Path, name: &str) -> Result<Option<Vec<Message>>> {
+        let pool = Self::open_session_pool(path).await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+                name TEXT PRIMARY KEY NOT NULL,
+                history_json TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+
+        let row = sqlx::query(
+            r#"
+            SELECT history_json
+            FROM sessions
+            WHERE name = ?1
+            "#,
+        )
+        .bind(name)
+        .fetch_optional(&pool)
+        .await
+        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let history_json: String = row
+            .try_get("history_json")
+            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+        let history: Vec<Message> = serde_json::from_str(&history_json)
+            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+        Ok(Some(history))
+    }
+
+    async fn save_history(path: &Path, name: &str, history: &[Message]) -> Result<()> {
+        let pool = Self::open_session_pool(path).await?;
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS sessions (
+                name TEXT PRIMARY KEY NOT NULL,
+                history_json TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+
+        let history_json = serde_json::to_string(history)
+            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+        sqlx::query(
+            r#"
+            INSERT INTO sessions (name, history_json)
+            VALUES (?1, ?2)
+            ON CONFLICT(name) DO UPDATE SET
+                history_json = excluded.history_json
+            "#,
+        )
+        .bind(name)
+        .bind(history_json)
+        .execute(&pool)
+        .await
+        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+        Ok(())
+    }
+
+    fn load_persisted_history(&self, lua: &Lua, name: &str) -> Result<()> {
+        let Some(path) = runtime::session_db_path(lua) else {
+            return Ok(());
+        };
+
+        let history = runtime::block_on(lua, async move { Self::load_history(&path, name).await })?;
+        if let Some(history) = history {
+            self.inner.borrow_mut().history = history;
+        }
+        Ok(())
+    }
+
+    fn persist_history(&self, lua: &Lua) -> Result<()> {
+        let Some(path) = runtime::session_db_path(lua) else {
+            return Ok(());
+        };
+
+        let inner = self.inner.borrow();
+        let name = inner
+            .name
+            .as_ref()
+            .ok_or_else(|| mlua::Error::RuntimeError("session name is missing".into()))?
+            .clone();
+        let history = inner.history.clone();
+        drop(inner);
+
+        runtime::block_on(lua, async move {
+            Self::save_history(&path, &name, &history).await
+        })
     }
 
     fn add_tool_spec(
@@ -249,6 +431,7 @@ impl Session {
             Value::String(s) => {
                 let content = s.to_str()?.to_owned();
                 self.push_history("assistant", content.clone());
+                self.persist_history(lua)?;
                 Ok(StepResult::Final(content))
             }
             Value::Table(table) => {
@@ -257,6 +440,7 @@ impl Session {
                     Some("final") => {
                         let content: String = table.get("content")?;
                         self.push_history("assistant", content.clone());
+                        self.persist_history(lua)?;
                         Ok(StepResult::Final(content))
                     }
                     Some("tool") => {
@@ -265,6 +449,7 @@ impl Session {
                         let result = self.call_tool_with_hooks(lua, &name, args)?;
                         let result_text = value_to_text(lua, &result)?;
                         self.push_history(format!("tool:{name}"), result_text.clone());
+                        self.persist_history(lua)?;
                         Ok(StepResult::Tool {
                             name,
                             result: result_text,
@@ -273,6 +458,7 @@ impl Session {
                     _ => {
                         let content = value_to_text(lua, &Value::Table(table))?;
                         self.push_history("assistant", content.clone());
+                        self.persist_history(lua)?;
                         Ok(StepResult::Final(content))
                     }
                 }
@@ -280,6 +466,7 @@ impl Session {
             other => {
                 let content = value_to_text(lua, &other)?;
                 self.push_history("assistant", content.clone());
+                self.persist_history(lua)?;
                 Ok(StepResult::Final(content))
             }
         }
@@ -351,12 +538,11 @@ fn tool_schema(lua: &Lua, fields: &[(&str, &str)]) -> Result<Table> {
 }
 
 fn required_tool_string(args: &Table, tool: &str, field: &str) -> Result<String> {
-    args.get::<Option<String>>(field)?
-        .ok_or_else(|| {
-            mlua::Error::RuntimeError(format!(
-                "tool `{tool}` is missing required string argument `{field}`"
-            ))
-        })
+    args.get::<Option<String>>(field)?.ok_or_else(|| {
+        mlua::Error::RuntimeError(format!(
+            "tool `{tool}` is missing required string argument `{field}`"
+        ))
+    })
 }
 
 #[derive(Debug, Clone)]
@@ -440,10 +626,13 @@ impl UserData for Session {
             Ok(())
         });
 
-        methods.add_method("call_tool", |lua, this, (name, args): (Value, Option<Value>)| {
-            let name = this.tool_name_from_value(name)?;
-            this.call_tool_with_hooks(lua, &name, args.unwrap_or(Value::Nil))
-        });
+        methods.add_method(
+            "call_tool",
+            |lua, this, (name, args): (Value, Option<Value>)| {
+                let name = this.tool_name_from_value(name)?;
+                this.call_tool_with_hooks(lua, &name, args.unwrap_or(Value::Nil))
+            },
+        );
 
         methods.add_method_mut("remove_tool", |_, this, name: String| {
             this.inner.borrow_mut().tools.remove(&name);
@@ -460,32 +649,36 @@ impl UserData for Session {
             Ok(())
         });
 
-        methods.add_method("push", |_, this, (role, content): (String, String)| {
+        methods.add_method("push", |lua, this, (role, content): (String, String)| {
             this.push_history(role, content);
+            this.persist_history(lua)?;
             Ok(())
         });
 
         methods.add_method("step", |lua, this, ()| this.step_once(lua));
 
-        methods.add_method("run", |lua, this, max_steps: Option<u32>| -> Result<String> {
-            let mut steps = 0u32;
-            loop {
-                if let Some(limit) = max_steps {
-                    if steps >= limit {
-                        return Err(mlua::Error::RuntimeError(
-                            "session did not finish within the configured step limit".into(),
-                        ));
+        methods.add_method(
+            "run",
+            |lua, this, max_steps: Option<u32>| -> Result<String> {
+                let mut steps = 0u32;
+                loop {
+                    if let Some(limit) = max_steps {
+                        if steps >= limit {
+                            return Err(mlua::Error::RuntimeError(
+                                "session did not finish within the configured step limit".into(),
+                            ));
+                        }
                     }
-                }
 
-                let step = this.step_once(lua)?;
-                let kind: Option<String> = step.get("kind").ok();
-                if kind.as_deref() == Some("final") {
-                    return step.get("content");
+                    let step = this.step_once(lua)?;
+                    let kind: Option<String> = step.get("kind").ok();
+                    if kind.as_deref() == Some("final") {
+                        return step.get("content");
+                    }
+                    steps += 1;
                 }
-                steps += 1;
-            }
-        });
+            },
+        );
     }
 }
 

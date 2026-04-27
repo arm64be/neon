@@ -2,7 +2,8 @@
 
 The `neon` module is registered automatically.
 
-- `neon.new_session(name)` creates a new session.
+- `neon.new_session([name])` creates a new session. If `name` is omitted, Neon generates a unique name.
+- `neon.set_session_db(path)` stores session history in the given SQLite database file. Reusing the same session name resumes its history from that file.
 - `neon.util.trim_string(s)` trims outer whitespace.
 - `neon.util.arg_flag(name)` checks whether a CLI flag is present.
 - `neon.util.arg_value(name)` returns the value for `--name=value`.

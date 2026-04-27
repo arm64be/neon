@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::path::PathBuf;
 
 use mlua::{Function, Lua, RegistryKey, Result};
 use tokio::runtime::Runtime;
@@ -6,6 +7,7 @@ use tokio::runtime::Runtime;
 pub struct NeonState {
     pub runtime: Arc<Runtime>,
     pub shutdown_hooks: Vec<RegistryKey>,
+    pub session_db_path: Option<PathBuf>,
 }
 
 impl NeonState {
@@ -13,6 +15,7 @@ impl NeonState {
         Self {
             runtime: Arc::new(runtime),
             shutdown_hooks: Vec::new(),
+            session_db_path: None,
         }
     }
 }
@@ -52,4 +55,18 @@ pub fn take_shutdown_hooks(lua: &Lua) -> Vec<RegistryKey> {
         .app_data_mut::<NeonState>()
         .expect("Neon runtime is not installed on this Lua state");
     std::mem::take(&mut state.shutdown_hooks)
+}
+
+pub fn set_session_db_path(lua: &Lua, path: PathBuf) {
+    let mut state = lua
+        .app_data_mut::<NeonState>()
+        .expect("Neon runtime is not installed on this Lua state");
+    state.session_db_path = Some(path);
+}
+
+pub fn session_db_path(lua: &Lua) -> Option<PathBuf> {
+    let state = lua
+        .app_data_ref::<NeonState>()
+        .expect("Neon runtime is not installed on this Lua state");
+    state.session_db_path.clone()
 }

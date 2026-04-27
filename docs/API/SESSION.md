@@ -4,12 +4,14 @@ Defined in [`src/session.rs`](../../src/session.rs).
 
 ## Construction
 
-- `neon.new_session(name)` returns a session userdata.
+- `neon.new_session([name])` returns a session userdata.
+- If `name` is omitted, Neon generates a unique session name.
+- When a session database is configured with `neon.set_session_db(path)`, creating a session with the same name loads the saved history for that session.
 
 ## Read methods
 
 - `session:id()` returns the numeric session id.
-- `session:name()` returns the optional name.
+- `session:name()` returns the session name.
 - `session:history()` returns the message history as `{ role, content }` tables.
 - `session:context()` returns the mutable session context table.
 - `session:tools()` returns a map of registered tool names.

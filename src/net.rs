@@ -75,7 +75,9 @@ fn body_to_bytes(lua: &Lua, body: Option<Value>) -> Result<Option<Vec<u8>>> {
     match body {
         None | Some(Value::Nil) => Ok(None),
         Some(Value::String(value)) => Ok(Some(value.as_bytes().to_vec())),
-        Some(Value::Table(table)) => Ok(Some(util::json_encode(lua, Value::Table(table))?.into_bytes())),
+        Some(Value::Table(table)) => Ok(Some(
+            util::json_encode(lua, Value::Table(table))?.into_bytes(),
+        )),
         Some(value) => Ok(Some(util::json_encode(lua, value)?.into_bytes())),
     }
 }
@@ -112,7 +114,11 @@ async fn request(
     body: Option<Value>,
 ) -> Result<reqwest::RequestBuilder> {
     let client = Client::new();
-    let url = apply_params(url.parse::<Url>().map_err(|err| mlua::Error::RuntimeError(err.to_string()))?, params)?;
+    let url = apply_params(
+        url.parse::<Url>()
+            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?,
+        params,
+    )?;
     let headers = parse_headers(headers)?;
     let body = body_to_bytes(lua, body)?;
     let method = Method::from_bytes(method.as_bytes())

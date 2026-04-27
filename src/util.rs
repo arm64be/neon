@@ -39,9 +39,9 @@ pub fn arg_flag(lua: &Lua, name: String) -> Result<bool> {
 
 pub fn arg_value(lua: &Lua, name: String) -> Result<Option<String>> {
     let needle = format!("{}=", normalized_arg_name(&name));
-    Ok(load_args(lua)?.into_iter().find_map(|arg| {
-        arg.strip_prefix(&needle).map(|value| value.to_string())
-    }))
+    Ok(load_args(lua)?
+        .into_iter()
+        .find_map(|arg| arg.strip_prefix(&needle).map(|value| value.to_string())))
 }
 
 pub fn arg_value_or(lua: &Lua, (name, default): (String, String)) -> Result<String> {

@@ -1,6 +1,9 @@
 local neon = require("neon")
 
-local session = neon.new_session("chat")
+neon.set_session_db(neon.config_root .. "/sessions.sqlite3")
+
+local session_name = neon.util.arg_value("resume") or neon.util.arg_value("session")
+local session = neon.new_session(session_name)
 
 session:context().model = neon.env_or("OPENROUTER_MODEL", "arcee-ai/trinity-mini")
 session:context().api_base = neon.env_or("OPENROUTER_API_BASE", "https://openrouter.ai/api/v1")

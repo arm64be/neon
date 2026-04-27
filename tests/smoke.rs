@@ -1,9 +1,11 @@
 use neon::Neon;
+use tempfile::tempdir;
 
 #[test]
 fn lua_module_loads() {
     let neon = Neon::new().expect("neon");
-    neon.set_args(&["--oneshot".to_string(), "ping".to_string()]).expect("args");
+    neon.set_args(&["--oneshot".to_string(), "ping".to_string()])
+        .expect("args");
     neon.exec_source(
         r#"
         local neon = require("neon")
@@ -68,4 +70,44 @@ fn shutdown_hook_runs() {
     neon.shutdown().expect("shutdown");
     let seen: bool = neon.lua().globals().get("seen").expect("seen");
     assert!(seen);
+}
+
+#[test]
+fn session_db_resumes_history() {
+    let dir = tempdir().expect("dir");
+    let db_path = dir.path().join("sessions.sqlite3");
+    let db_path_str = db_path.to_string_lossy().replace('\\', "\\\\");
+
+    let neon = Neon::new().expect("neon");
+    neon.exec_source(
+        &format!(
+            r#"
+            local neon = require("neon")
+            neon.set_session_db("{db_path}")
+            local session = neon.new_session("resume-smoke")
+            session:push("user", "hello")
+        "#,
+            db_path = db_path_str
+        ),
+        "persist-write.lua",
+    )
+    .expect("persist write");
+
+    let neon = Neon::new().expect("neon");
+    neon.exec_source(
+        &format!(
+            r#"
+            local neon = require("neon")
+            neon.set_session_db("{db_path}")
+            local session = neon.new_session("resume-smoke")
+            local history = session:history()
+            assert(#history == 1)
+            assert(history[1].role == "user")
+            assert(history[1].content == "hello")
+        "#,
+            db_path = db_path_str
+        ),
+        "persist-read.lua",
+    )
+    .expect("persist read");
 }

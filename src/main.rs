@@ -1,6 +1,5 @@
 use std::{
-    env,
-    fs,
+    env, fs,
     path::{Path, PathBuf},
 };
 
@@ -38,7 +37,8 @@ fn apply_env_file(root: &Path) -> mlua::Result<()> {
         return Ok(());
     }
 
-    let source = fs::read_to_string(&path).map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+    let source =
+        fs::read_to_string(&path).map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
     for (line_no, line) in source.lines().enumerate() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -94,8 +94,8 @@ fn main() -> mlua::Result<()> {
         std::process::exit(2);
     }
 
-    let source = fs::read_to_string(&script)
-        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
+    let source =
+        fs::read_to_string(&script).map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
 
     let neon = Neon::new()?;
     neon.set_args(&config_args)?;
