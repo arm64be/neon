@@ -1,6 +1,7 @@
 pub mod net;
 pub mod runtime;
 pub mod session;
+pub mod sqlite;
 pub mod tools;
 pub mod util;
 #[cfg(feature = "blessing")]
@@ -75,7 +76,9 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
     module.set("new_session", new_session)?;
     module.set(
         "set_session_db",
-        lua.create_function(|lua, path: String| session::Session::set_session_db(lua, path))?,
+        lua.create_function(|lua, connection: mlua::Value| {
+            session::Session::set_session_db(lua, connection)
+        })?,
     )?;
 
     let util = lua.create_table()?;
@@ -199,6 +202,10 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
             preload.set(
                 "blessing",
                 lua.create_function(|lua, ()| crate::blessing::create_module(lua))?,
+            )?;
+            preload.set(
+                "sqlite",
+                lua.create_function(|lua, ()| crate::sqlite::create_module(lua))?,
             )?;
         }
     }

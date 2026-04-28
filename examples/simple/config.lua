@@ -1,6 +1,8 @@
 local neon = require("neon")
+local sqlite = require("sqlite")
 
-neon.set_session_db(neon.config_root .. "/sessions.sqlite3")
+local db = sqlite.connect(neon.config_root .. "/sessions.sqlite3")
+neon.set_session_db(db)
 
 local session_name = neon.util.arg_value("resume") or neon.util.arg_value("session")
 local session = neon.new_session(session_name)

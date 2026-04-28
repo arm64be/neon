@@ -1,8 +1,6 @@
 use std::{
     cell::RefCell,
     collections::HashMap,
-    fs,
-    path::{Path, PathBuf},
     rc::Rc,
     sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
@@ -10,12 +8,10 @@ use std::{
 
 use mlua::{Function, Lua, Result, Table, UserData, UserDataMethods, Value};
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-    Row, SqlitePool,
-};
+use sqlx::Row;
 
 use crate::runtime;
+use crate::sqlite::SqliteConnection;
 use crate::tools;
 
 static NEXT_SESSION_ID: AtomicU64 = AtomicU64::new(1);
@@ -35,13 +31,6 @@ fn normalize_session_name(name: Option<String>) -> String {
         Some(name) if !name.trim().is_empty() => name,
         _ => generate_session_name(),
     }
-}
-
-fn sqlite_url(path: &Path) -> Result<SqliteConnectOptions> {
-    let options = SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true);
-    Ok(options)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -131,38 +120,17 @@ impl Session {
         Ok(())
     }
 
-    pub fn set_session_db(lua: &Lua, path: String) -> Result<()> {
-        let path = PathBuf::from(path);
-        if path.as_os_str().is_empty() {
-            return Err(mlua::Error::RuntimeError(
-                "session database path cannot be empty".into(),
-            ));
-        }
-
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
-                fs::create_dir_all(parent)
-                    .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
-            }
-        }
-
-        runtime::block_on(lua, Self::ensure_session_schema(&path))?;
-        runtime::set_session_db_path(lua, path);
-
+    pub fn set_session_db(lua: &Lua, connection: Value) -> Result<()> {
+        let connection = SqliteConnection::resolve(lua, connection)?;
+        runtime::block_on(lua, Self::ensure_session_schema(lua, &connection))?;
+        runtime::set_default_session_db(lua, connection.id().to_string());
         Ok(())
     }
 
-    async fn open_session_pool(path: &Path) -> Result<SqlitePool> {
-        let options = sqlite_url(path)?;
-        SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(options)
-            .await
-            .map_err(|err| mlua::Error::RuntimeError(err.to_string()))
-    }
-
-    async fn ensure_session_schema(path: &Path) -> Result<()> {
-        let pool = Self::open_session_pool(path).await?;
+    async fn ensure_session_schema(lua: &Lua, connection: &SqliteConnection) -> Result<()> {
+        let pool = runtime::sqlite_connection(lua, connection.id()).ok_or_else(|| {
+            mlua::Error::RuntimeError("sqlite connection is not registered".into())
+        })?;
         sqlx::query(
             r#"
             CREATE TABLE IF NOT EXISTS sessions (
@@ -177,20 +145,10 @@ impl Session {
         Ok(())
     }
 
-    async fn load_history(path: &Path, name: &str) -> Result<Option<Vec<Message>>> {
-        let pool = Self::open_session_pool(path).await?;
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS sessions (
-                name TEXT PRIMARY KEY NOT NULL,
-                history_json TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
-
+    async fn load_history(lua: &Lua, connection: &SqliteConnection, name: &str) -> Result<Option<Vec<Message>>> {
+        let pool = runtime::sqlite_connection(lua, connection.id()).ok_or_else(|| {
+            mlua::Error::RuntimeError("sqlite connection is not registered".into())
+        })?;
         let row = sqlx::query(
             r#"
             SELECT history_json
@@ -215,20 +173,15 @@ impl Session {
         Ok(Some(history))
     }
 
-    async fn save_history(path: &Path, name: &str, history: &[Message]) -> Result<()> {
-        let pool = Self::open_session_pool(path).await?;
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS sessions (
-                name TEXT PRIMARY KEY NOT NULL,
-                history_json TEXT NOT NULL
-            )
-            "#,
-        )
-        .execute(&pool)
-        .await
-        .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
-
+    async fn save_history(
+        lua: &Lua,
+        connection: &SqliteConnection,
+        name: &str,
+        history: &[Message],
+    ) -> Result<()> {
+        let pool = runtime::sqlite_connection(lua, connection.id()).ok_or_else(|| {
+            mlua::Error::RuntimeError("sqlite connection is not registered".into())
+        })?;
         let history_json = serde_json::to_string(history)
             .map_err(|err| mlua::Error::RuntimeError(err.to_string()))?;
         sqlx::query(
@@ -248,11 +201,15 @@ impl Session {
     }
 
     fn load_persisted_history(&self, lua: &Lua, name: &str) -> Result<()> {
-        let Some(path) = runtime::session_db_path(lua) else {
+        let Some(connection_id) = runtime::default_session_db(lua) else {
             return Ok(());
         };
+        let connection = SqliteConnection::from_id(connection_id);
 
-        let history = runtime::block_on(lua, async move { Self::load_history(&path, name).await })?;
+        let history = runtime::block_on(lua, async move {
+            Self::ensure_session_schema(lua, &connection).await?;
+            Self::load_history(lua, &connection, name).await
+        })?;
         if let Some(history) = history {
             self.inner.borrow_mut().history = history;
         }
@@ -260,9 +217,10 @@ impl Session {
     }
 
     fn persist_history(&self, lua: &Lua) -> Result<()> {
-        let Some(path) = runtime::session_db_path(lua) else {
+        let Some(connection_id) = runtime::default_session_db(lua) else {
             return Ok(());
         };
+        let connection = SqliteConnection::from_id(connection_id);
 
         let inner = self.inner.borrow();
         let name = inner
@@ -274,7 +232,8 @@ impl Session {
         drop(inner);
 
         runtime::block_on(lua, async move {
-            Self::save_history(&path, &name, &history).await
+            Self::ensure_session_schema(lua, &connection).await?;
+            Self::save_history(lua, &connection, &name, &history).await
         })
     }
 

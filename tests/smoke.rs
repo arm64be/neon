@@ -9,6 +9,7 @@ fn lua_module_loads() {
     neon.exec_source(
         r#"
         local neon = require("neon")
+        local sqlite = require("sqlite")
         local session = neon.new_session("smoke")
         assert(neon.args[1] == "--oneshot")
         assert(neon.tokio ~= nil)
@@ -23,6 +24,18 @@ fn lua_module_loads() {
         local decoded = neon.json.decode(encoded)
         assert(decoded.a == 1 and decoded.b == "x")
         assert(neon.tools ~= nil)
+        local mem = sqlite.memory()
+        assert(type(mem:id()) == "string")
+        local models = sqlite.schema(mem, {
+          todos = {
+            id = { type = "INTEGER", primary_key = true, nullable = false },
+            title = { type = "TEXT", nullable = false },
+            done = { type = "INTEGER", nullable = false, default = "0" },
+          },
+        })
+        models.todos:insert({ id = 1, title = "first", done = 0 })
+        local rows = models.todos:where("id = ?", { 1 })
+        assert(#rows == 1 and rows[1].title == "first")
         local specs = session:tool_specs()
         assert(specs[1].type == "function")
         assert(specs[1]["function"].name == "bash")
@@ -83,7 +96,9 @@ fn session_db_resumes_history() {
         &format!(
             r#"
             local neon = require("neon")
-            neon.set_session_db("{db_path}")
+            local sqlite = require("sqlite")
+            local db = sqlite.connect("{db_path}")
+            neon.set_session_db(db)
             local session = neon.new_session("resume-smoke")
             session:push("user", "hello")
         "#,
@@ -98,7 +113,9 @@ fn session_db_resumes_history() {
         &format!(
             r#"
             local neon = require("neon")
-            neon.set_session_db("{db_path}")
+            local sqlite = require("sqlite")
+            local db = sqlite.connect("{db_path}")
+            neon.set_session_db(db:id())
             local session = neon.new_session("resume-smoke")
             local history = session:history()
             assert(#history == 1)
@@ -110,6 +127,89 @@ fn session_db_resumes_history() {
         "persist-read.lua",
     )
     .expect("persist read");
+}
+
+#[test]
+fn sqlite_connection_helpers_work_in_memory() {
+    let neon = Neon::new().expect("neon");
+    neon.exec_source(
+        r#"
+        local neon = require("neon")
+        local sqlite = require("sqlite")
+        local db = sqlite.memory()
+
+        assert(type(db:id()) == "string")
+        assert(db:exec("CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL)") == 0)
+        assert(db:exec("INSERT INTO notes (id, title) VALUES (?, ?)", { 1, "hello" }) == 1)
+        assert(db:exec("INSERT INTO notes (id, title) VALUES (?, ?)", { 2, "world" }) == 1)
+
+        local rows = db:query("SELECT id, title FROM notes WHERE id > ? ORDER BY id ASC", { 0 })
+        assert(#rows == 2)
+        assert(rows[1].id == 1 and rows[1].title == "hello")
+        assert(rows[2].id == 2 and rows[2].title == "world")
+
+        local one = db:one("SELECT id, title FROM notes WHERE id = ?", { 2 })
+        assert(one ~= nil and one.title == "world")
+        local none = db:one("SELECT id, title FROM notes WHERE id = ?", { 999 })
+        assert(none == nil)
+    "#,
+        "sqlite-helpers-in-memory.lua",
+    )
+    .expect("sqlite helper smoke");
+}
+
+#[test]
+fn sqlite_schema_models_work_in_memory() {
+    let neon = Neon::new().expect("neon");
+    neon.exec_source(
+        r#"
+        local sqlite = require("sqlite")
+        local db = sqlite.memory()
+        local models = db:schema({
+          todos = {
+            id = { type = "INTEGER", primary_key = true, nullable = false },
+            title = { type = "TEXT", nullable = false },
+            done = { type = "INTEGER", nullable = false, default = "0" },
+          },
+        })
+
+        models.todos:insert({ id = 1, title = "first", done = 0 })
+        models.todos:insert({ id = 2, title = "second", done = 1 })
+
+        local filtered = models.todos:where("done = ?", { 1 })
+        assert(#filtered == 1)
+        assert(filtered[1].id == 2 and filtered[1].title == "second")
+
+        local all = models.todos:all()
+        assert(#all == 2)
+    "#,
+        "sqlite-schema-in-memory.lua",
+    )
+    .expect("sqlite schema smoke");
+}
+
+#[test]
+fn session_db_works_with_in_memory_sqlite_connection() {
+    let neon = Neon::new().expect("neon");
+    neon.exec_source(
+        r#"
+        local neon = require("neon")
+        local sqlite = require("sqlite")
+        local db = sqlite.memory()
+        neon.set_session_db(db)
+
+        local first = neon.new_session("memory-session")
+        first:push("user", "hello")
+
+        local second = neon.new_session("memory-session")
+        local history = second:history()
+        assert(#history == 1)
+        assert(history[1].role == "user")
+        assert(history[1].content == "hello")
+    "#,
+        "session-db-in-memory.lua",
+    )
+    .expect("session db memory smoke");
 }
 
 #[cfg(feature = "blessing")]

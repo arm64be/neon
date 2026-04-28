@@ -6,7 +6,7 @@ Defined in [`src/session.rs`](../../src/session.rs).
 
 - `neon.new_session([name])` returns a session userdata.
 - If `name` is omitted, Neon generates a unique session name.
-- When a session database is configured with `neon.set_session_db(path)`, creating a session with the same name loads the saved history for that session.
+- When a session database is configured with `neon.set_session_db(connection_or_id)`, creating a session with the same name loads the saved history for that session.
 
 ## Read methods
 

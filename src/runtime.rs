@@ -1,13 +1,15 @@
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::path::PathBuf;
 
 use mlua::{Function, Lua, RegistryKey, Result};
 use tokio::runtime::Runtime;
+use sqlx::SqlitePool;
 
 pub struct NeonState {
     pub runtime: Arc<Runtime>,
     pub shutdown_hooks: Vec<RegistryKey>,
-    pub session_db_path: Option<PathBuf>,
+    pub sqlite_connections: HashMap<String, SqlitePool>,
+    pub default_session_db: Option<String>,
 }
 
 impl NeonState {
@@ -15,7 +17,8 @@ impl NeonState {
         Self {
             runtime: Arc::new(runtime),
             shutdown_hooks: Vec::new(),
-            session_db_path: None,
+            sqlite_connections: HashMap::new(),
+            default_session_db: None,
         }
     }
 }
@@ -57,16 +60,30 @@ pub fn take_shutdown_hooks(lua: &Lua) -> Vec<RegistryKey> {
     std::mem::take(&mut state.shutdown_hooks)
 }
 
-pub fn set_session_db_path(lua: &Lua, path: PathBuf) {
+pub fn register_sqlite_connection(lua: &Lua, id: String, pool: SqlitePool) {
     let mut state = lua
         .app_data_mut::<NeonState>()
         .expect("Neon runtime is not installed on this Lua state");
-    state.session_db_path = Some(path);
+    state.sqlite_connections.insert(id, pool);
 }
 
-pub fn session_db_path(lua: &Lua) -> Option<PathBuf> {
+pub fn sqlite_connection(lua: &Lua, id: &str) -> Option<SqlitePool> {
     let state = lua
         .app_data_ref::<NeonState>()
         .expect("Neon runtime is not installed on this Lua state");
-    state.session_db_path.clone()
+    state.sqlite_connections.get(id).cloned()
+}
+
+pub fn set_default_session_db(lua: &Lua, id: String) {
+    let mut state = lua
+        .app_data_mut::<NeonState>()
+        .expect("Neon runtime is not installed on this Lua state");
+    state.default_session_db = Some(id);
+}
+
+pub fn default_session_db(lua: &Lua) -> Option<String> {
+    let state = lua
+        .app_data_ref::<NeonState>()
+        .expect("Neon runtime is not installed on this Lua state");
+    state.default_session_db.clone()
 }
