@@ -1,0 +1,85 @@
+name: Release
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - Cargo.toml
+      - Cargo.lock
+      - src/**
+      - tests/**
+      - examples/**
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+      - run: cargo check --locked
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo fmt --all --check
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: release
+      - name: Build release binary
+        run: cargo build --locked --release --bin neon
+      - id: package
+        name: Package release artifacts
+        run: |
+          set -euo pipefail
+
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          timestamp=$(date -u +%Y%m%d%H%M%S)
+          release_name="v${version}+${timestamp}"
+          artifact_root="neon-${release_name}-linux-x86_64"
+          staging_dir="$(mktemp -d)"
+          binary_tarball="${artifact_root}.tar.gz"
+          source_tarball="${artifact_root}-source.tar.gz"
+
+          install -Dm755 target/release/neon "${staging_dir}/neon"
+          tar -C "${staging_dir}" -czf "${binary_tarball}" neon
+          git archive --format=tar.gz --prefix="${artifact_root}-source/" -o "${source_tarball}" HEAD
+
+          sha256sum "${binary_tarball}" > "${binary_tarball}.sha256"
+          sha256sum "${source_tarball}" > "${source_tarball}.sha256"
+
+          {
+            echo "release_name=${release_name}"
+            echo "binary_tarball=${binary_tarball}"
+            echo "source_tarball=${source_tarball}"
+          } >> "${GITHUB_OUTPUT}"
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.package.outputs.release_name }}
+          name: ${{ steps.package.outputs.release_name }}
+          target_commitish: ${{ github.sha }}
+          generate_release_notes: true
+          files: |
+            ${{ steps.package.outputs.binary_tarball }}
+            ${{ steps.package.outputs.binary_tarball }}.sha256
+            ${{ steps.package.outputs.source_tarball }}
+            ${{ steps.package.outputs.source_tarball }}.sha256

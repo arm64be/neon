@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  changes:
+    runs-on: ubuntu-latest
+    outputs:
+      root: ${{ steps.filter.outputs.root }}
+      website: ${{ steps.filter.outputs.website }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: filter
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            root:
+              - Cargo.toml
+              - Cargo.lock
+              - src/**
+              - tests/**
+              - examples/**
+            website:
+              - website/**
+
+  root:
+    needs: changes
+    if: needs.changes.outputs.root == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: root
+      - run: cargo check --locked
+      - run: cargo test --locked
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo fmt --all --check
+
+  website:
+    needs: changes
+    if: needs.changes.outputs.website == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: website
+      - run: cargo check --locked --manifest-path website/Cargo.toml
+      - run: cargo test --locked --manifest-path website/Cargo.toml
+      - run: cargo clippy --locked --manifest-path website/Cargo.toml --all-targets --all-features -- -D warnings
+      - run: cargo fmt --all --check --manifest-path website/Cargo.toml
