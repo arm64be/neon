@@ -5,7 +5,7 @@ edition = "2021"
 
 [features]
 default = ["blessing"]
-blessing = ["dep:ratatui"]
+blessing = ["dep:ratatui", "dep:tachyonfx"]
 
 [dependencies]
 mlua = { version = "0.10", features = ["lua54", "vendored"] }
@@ -17,6 +17,7 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tokio = { version = "1", features = ["fs", "process", "rt-multi-thread", "time"] }
 ratatui = { version = "0.29", default-features = false, features = ["crossterm"], optional = true }
+tachyonfx = { version = "0.25", optional = true }
 
 [dev-dependencies]
 tempfile = "3"

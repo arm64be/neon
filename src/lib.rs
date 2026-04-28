@@ -4,6 +4,8 @@ pub mod net;
 pub mod runtime;
 pub mod session;
 pub mod sqlite;
+#[cfg(feature = "blessing")]
+pub mod tachyonfx;
 pub mod tools;
 pub mod util;
 

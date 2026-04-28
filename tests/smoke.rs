@@ -222,6 +222,11 @@ fn blessing_module_loads() {
         assert(blessing.available == true)
         assert(blessing.codename == "blessing")
         assert(blessing.version ~= nil)
+        assert(blessing.fx ~= nil)
+        assert(blessing.fx.available == true)
+        local dsl = blessing.fx.new()
+        local effect = dsl:compile("fx::dissolve(100)")
+        assert(effect:name() ~= nil)
         local ui = blessing.new()
         ui:set_layout({
           direction = "vertical",

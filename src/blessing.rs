@@ -625,5 +625,6 @@ pub fn create_module(lua: &Lua) -> Result<mlua::Table> {
     module.set("available", true)?;
     module.set("codename", "blessing")?;
     module.set("version", "0.2")?;
+    module.set("fx", crate::tachyonfx::create_module(lua)?)?;
     Ok(module)
 }
