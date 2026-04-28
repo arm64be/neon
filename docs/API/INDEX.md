@@ -2,9 +2,9 @@
 
 This page documents the public Rust and Lua-facing API exposed by Neon.
 
-- [Rust API](RUST.md)
-- [Lua Module](LUA.md)
-- [Blessing Module](BLESSING.md)
-- [Session API](SESSION.md)
-- [Tool Spec Format](TOOL_SPEC_FORMAT.md)
-- [Result Shapes](RESULT_SHAPES.md)
+- [Rust API](rust.md)
+- [Lua Module](lua.md)
+- [Blessing Module](blessing.md)
+- [Session API](session.md)
+- [Tool Spec Format](tool_spec_format.md)
+- [Result Shapes](result_shapes.md)

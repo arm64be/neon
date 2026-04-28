@@ -2,9 +2,9 @@
 
 Neon is a minimal Rust + Lua agent harness. This documentation is split into a small set of focused pages:
 
-- [Installation](INSTALLATION.md)
-- [API Reference](API/INDEX.md)
-- [Troubleshooting](TROUBLESHOOTING.md)
+- [Installation](installation.md)
+- [API Reference](api/index.md)
+- [Troubleshooting](troubleshooting.md)
 
 ## Quick Start
 

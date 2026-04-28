@@ -4,7 +4,7 @@ The `neon` module is registered automatically.
 
 Optional modules:
 
-- `blessing` is available as a separate `require("blessing")` module when built with the `blessing` feature (enabled by default). See [Blessing Module](BLESSING.md).
+- `blessing` is available as a separate `require("blessing")` module when built with the `blessing` feature (enabled by default). See [Blessing Module](blessing.md).
 
 - `neon.new_session([name])` creates a new session. If `name` is omitted, Neon generates a unique name.
 - `neon.set_session_db(path)` stores session history in the given SQLite database file. Reusing the same session name resumes its history from that file.
