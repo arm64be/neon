@@ -94,10 +94,7 @@ impl SqliteConnection {
 
     fn pool(&self, lua: &Lua) -> Result<SqlitePool> {
         runtime::sqlite_connection(lua, &self.id).ok_or_else(|| {
-            mlua::Error::RuntimeError(format!(
-                "sqlite connection `{}` is not registered",
-                self.id
-            ))
+            mlua::Error::RuntimeError(format!("sqlite connection `{}` is not registered", self.id))
         })
     }
 
@@ -190,16 +187,18 @@ impl SqliteConnection {
 impl UserData for SqliteConnection {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
         methods.add_method("id", |_, this, ()| Ok(this.id.clone()));
-        methods.add_method("exec", |lua, this, (sql, params): (String, Option<Table>)| {
-            this.exec(lua, sql, params)
-        });
+        methods.add_method(
+            "exec",
+            |lua, this, (sql, params): (String, Option<Table>)| this.exec(lua, sql, params),
+        );
         methods.add_method(
             "query",
             |lua, this, (sql, params): (String, Option<Table>)| this.query_all(lua, sql, params),
         );
-        methods.add_method("one", |lua, this, (sql, params): (String, Option<Table>)| {
-            this.query_one(lua, sql, params)
-        });
+        methods.add_method(
+            "one",
+            |lua, this, (sql, params): (String, Option<Table>)| this.query_one(lua, sql, params),
+        );
         methods.add_method("schema", |lua, this, definition: Table| {
             this.schema(lua, definition)
         });
@@ -287,16 +286,24 @@ fn build_create_table_sql(table_name: &str, columns: Table) -> Result<String> {
         let definition = match value {
             Value::String(s) => s.to_str()?.to_owned(),
             Value::Table(t) => {
-                let ty: String = t
-                    .get("type")
-                    .map_err(|_| mlua::Error::RuntimeError("schema column missing `type`".into()))?;
-                let nullable = t.get::<Option<bool>>("nullable").ok().flatten().unwrap_or(true);
+                let ty: String = t.get("type").map_err(|_| {
+                    mlua::Error::RuntimeError("schema column missing `type`".into())
+                })?;
+                let nullable = t
+                    .get::<Option<bool>>("nullable")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(true);
                 let primary_key = t
                     .get::<Option<bool>>("primary_key")
                     .ok()
                     .flatten()
                     .unwrap_or(false);
-                let unique = t.get::<Option<bool>>("unique").ok().flatten().unwrap_or(false);
+                let unique = t
+                    .get::<Option<bool>>("unique")
+                    .ok()
+                    .flatten()
+                    .unwrap_or(false);
                 let default = t.get::<Option<String>>("default").ok().flatten();
                 let mut parts = vec![ty];
                 if !nullable {

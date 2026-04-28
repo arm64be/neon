@@ -1,11 +1,11 @@
+#[cfg(feature = "blessing")]
+pub mod blessing;
 pub mod net;
 pub mod runtime;
 pub mod session;
 pub mod sqlite;
 pub mod tools;
 pub mod util;
-#[cfg(feature = "blessing")]
-pub mod blessing;
 
 use std::path::Path;
 

@@ -11,9 +11,7 @@ use ratatui::{
     layout::{Constraint, Direction, Rect},
     style::{Color, Modifier, Style},
     symbols,
-    widgets::{
-        Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Sparkline, Tabs, Wrap,
-    },
+    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Sparkline, Tabs, Wrap},
     Terminal,
 };
 
@@ -384,17 +382,14 @@ fn render_widget(frame: &mut ratatui::Frame, area: Rect, widget: Table) -> Resul
 }
 
 fn render_spec(frame: &mut ratatui::Frame, area: Rect, spec: Value) -> Result<()> {
-    match spec {
-        Value::Table(t) => {
-            if t.contains_key("kind")? {
-                render_widget(frame, area, t)?;
-            } else {
-                for entry in t.sequence_values::<Value>() {
-                    render_spec(frame, area, entry?)?;
-                }
+    if let Value::Table(t) = spec {
+        if t.contains_key("kind")? {
+            render_widget(frame, area, t)?;
+        } else {
+            for entry in t.sequence_values::<Value>() {
+                render_spec(frame, area, entry?)?;
             }
         }
-        _ => {}
     }
     Ok(())
 }
@@ -538,7 +533,9 @@ fn event_table(lua: &Lua, ev: Event) -> Result<Table> {
 
 impl UserData for BlessingState {
     fn add_methods<M: UserDataMethods<Self>>(methods: &mut M) {
-        methods.add_method_mut("set_layout", |lua, this, table: Table| this.set_layout(lua, table));
+        methods.add_method_mut("set_layout", |lua, this, table: Table| {
+            this.set_layout(lua, table)
+        });
 
         methods.add_method_mut("set_input", |_, this, input: String| {
             this.input = input;
@@ -621,7 +618,10 @@ impl UserData for BlessingState {
 
 pub fn create_module(lua: &Lua) -> Result<mlua::Table> {
     let module = lua.create_table()?;
-    module.set("new", lua.create_function(|_, ()| Ok(BlessingState::new()))?)?;
+    module.set(
+        "new",
+        lua.create_function(|_, ()| Ok(BlessingState::new()))?,
+    )?;
     module.set("available", true)?;
     module.set("codename", "blessing")?;
     module.set("version", "0.2")?;

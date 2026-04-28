@@ -145,7 +145,11 @@ impl Session {
         Ok(())
     }
 
-    async fn load_history(lua: &Lua, connection: &SqliteConnection, name: &str) -> Result<Option<Vec<Message>>> {
+    async fn load_history(
+        lua: &Lua,
+        connection: &SqliteConnection,
+        name: &str,
+    ) -> Result<Option<Vec<Message>>> {
         let pool = runtime::sqlite_connection(lua, connection.id()).ok_or_else(|| {
             mlua::Error::RuntimeError("sqlite connection is not registered".into())
         })?;

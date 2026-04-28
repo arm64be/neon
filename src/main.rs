@@ -11,7 +11,7 @@ fn resolve_config_root() -> Option<PathBuf> {
     }
 
     if cfg!(debug_assertions) {
-        return Some(PathBuf::from("."));
+        Some(PathBuf::from("."))
     } else {
         if let Ok(xdg) = env::var("XDG_CONFIG_HOME") {
             let candidate = PathBuf::from(xdg).join("neon");

@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use mlua::{Function, Lua, RegistryKey, Result};
-use tokio::runtime::Runtime;
 use sqlx::SqlitePool;
+use tokio::runtime::Runtime;
 
 pub struct NeonState {
     pub runtime: Arc<Runtime>,
