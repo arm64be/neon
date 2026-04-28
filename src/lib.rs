@@ -3,6 +3,8 @@ pub mod runtime;
 pub mod session;
 pub mod tools;
 pub mod util;
+#[cfg(feature = "blessing")]
+pub mod blessing;
 
 use std::path::Path;
 
@@ -192,6 +194,11 @@ pub fn register_module(lua: &Lua) -> Result<Table> {
             preload.set(
                 "neon",
                 lua.create_function(move |_, ()| Ok(module_clone.clone()))?,
+            )?;
+            #[cfg(feature = "blessing")]
+            preload.set(
+                "blessing",
+                lua.create_function(|lua, ()| crate::blessing::create_module(lua))?,
             )?;
         }
     }

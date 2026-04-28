@@ -111,3 +111,45 @@ fn session_db_resumes_history() {
     )
     .expect("persist read");
 }
+
+#[cfg(feature = "blessing")]
+#[test]
+fn blessing_module_loads() {
+    let neon = Neon::new().expect("neon");
+    neon.exec_source(
+        r#"
+        local blessing = require("blessing")
+        assert(blessing.available == true)
+        assert(blessing.codename == "blessing")
+        local ui = blessing.new()
+        ui:set_layout({
+          direction = "vertical",
+          constraints = { "length:3", "min:1" },
+          children = {
+            {
+              render = function(ctx)
+                return {
+                  kind = "paragraph",
+                  text = "header",
+                  block = { title = "title", borders = "all" },
+                  style = { fg = "cyan", bold = true },
+                }
+              end
+            },
+            {
+              render = function(ctx)
+                return {
+                  kind = "paragraph",
+                  text = "body:" .. (ctx.input or ""),
+                  block = { title = "body", borders = "all" },
+                }
+              end
+            }
+          }
+        })
+        ui:set_input("hello")
+        "#,
+        "blessing-smoke.lua",
+    )
+    .expect("blessing module");
+}
