@@ -121,6 +121,7 @@ fn blessing_module_loads() {
         local blessing = require("blessing")
         assert(blessing.available == true)
         assert(blessing.codename == "blessing")
+        assert(blessing.version ~= nil)
         local ui = blessing.new()
         ui:set_layout({
           direction = "vertical",
@@ -148,7 +149,11 @@ fn blessing_module_loads() {
           }
         })
         ui:set_input("hello")
-        "#,
+        local ok1, ev = pcall(function() return ui:poll_event(0) end)
+        assert(ok1 or tostring(ev):find("Failed to initialize input reader") ~= nil)
+        local ok2, key = pcall(function() return ui:read_key(0) end)
+        assert(ok2 or tostring(key):find("Failed to initialize input reader") ~= nil)
+    "#,
         "blessing-smoke.lua",
     )
     .expect("blessing module");
