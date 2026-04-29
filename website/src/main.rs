@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
-const DEFAULT_MODEL: &str = "openai/gpt-4.1-mini";
+const DEFAULT_MODEL: &str = "openai/gpt-oss-20b";
 const OPENROUTER_MAX_RETRIES: usize = 3;
 
 #[derive(Clone)]
@@ -382,7 +382,7 @@ fn call_openrouter_once(
     let response: Value = ureq::post(OPENROUTER_URL)
         .set("Authorization", &format!("Bearer {api_key}"))
         .set("Content-Type", "application/json")
-        .set("HTTP-Referer", "https://github.com/openai/codex")
+        .set("HTTP-Referer", "https://github.com/arm64be/neon")
         .set("X-Title", "neon onboarding providers")
         .send_json(payload)
         .map_err(|err| format!("OpenRouter request failed: {err}"))?
@@ -412,12 +412,10 @@ fn parse_model_providers_response(content: &str) -> Result<Vec<ProviderSchema>, 
         return Ok(providers);
     }
 
-    Err(
-        serde_json::from_str::<ModelProvidersResponse>(content)
-            .err()
-            .map(|err| format!("model returned invalid JSON: {err}"))
-            .unwrap_or_else(|| "model returned invalid JSON".to_string()),
-    )
+    Err(serde_json::from_str::<ModelProvidersResponse>(content)
+        .err()
+        .map(|err| format!("model returned invalid JSON: {err}"))
+        .unwrap_or_else(|| "model returned invalid JSON".to_string()))
 }
 
 fn validate_provider_schemas(providers: &[ProviderSchema]) -> Result<(), String> {
