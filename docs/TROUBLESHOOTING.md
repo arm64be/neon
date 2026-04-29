@@ -11,6 +11,8 @@ Check the config root resolution order in `src/main.rs`:
 
 If you are launching the binary directly, pass a script path or set `NEON_CONFIG_ROOT` to a directory that contains `config.lua`.
 
+For repository starters, use `NEON_CONFIG_ROOT=configs/onboarding` for first-time setup or `NEON_CONFIG_ROOT=configs/preset` for the default harness.
+
 ## `.env` parsing fails
 
 Neon accepts `KEY=VALUE` and `export KEY=VALUE` lines only.

@@ -25,7 +25,8 @@ jobs:
               - Cargo.lock
               - src/**
               - tests/**
-              - examples/**
+              - configs/**
+              - install.sh
             website:
               - website/**
 

@@ -3,3 +3,7 @@ target/
 *.sqlite3
 
 .codex
+
+configs/preset/.env
+configs/preset/user_data.lua
+configs/preset/providers/selected.lua

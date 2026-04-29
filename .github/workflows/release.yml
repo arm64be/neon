@@ -9,7 +9,8 @@ on:
       - Cargo.lock
       - src/**
       - tests/**
-      - examples/**
+      - configs/**
+      - install.sh
   workflow_dispatch:
 
 permissions:
