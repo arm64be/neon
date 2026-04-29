@@ -14,6 +14,7 @@ use serde_json::{json, Value};
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";
 const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
 const DEFAULT_MODEL: &str = "openai/gpt-4.1-mini";
+const OPENROUTER_MAX_RETRIES: usize = 3;
 
 #[derive(Clone)]
 struct Asset {
@@ -306,8 +307,33 @@ fn onboarding_providers(body: &[u8]) -> JsonResponse {
 }
 
 fn call_openrouter(api_key: &str, answer: &str) -> Result<Vec<ProviderSchema>, String> {
+    let mut last_error = None;
+    for attempt in 1..=OPENROUTER_MAX_RETRIES {
+        match call_openrouter_once(api_key, answer, attempt) {
+            Ok(providers) => return Ok(providers),
+            Err(err) => last_error = Some(err),
+        }
+    }
+
+    Err(format!(
+        "provider model returned invalid output after {} attempts: {}",
+        OPENROUTER_MAX_RETRIES,
+        last_error.unwrap_or_else(|| "unknown error".to_string())
+    ))
+}
+
+fn call_openrouter_once(
+    api_key: &str,
+    answer: &str,
+    attempt: usize,
+) -> Result<Vec<ProviderSchema>, String> {
     let model = env::var("NEON_ONBOARDING_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
-    let system = onboarding_system_prompt();
+    let mut system = onboarding_system_prompt();
+    if attempt > 1 {
+        system.push_str(
+            "\nPrevious response was invalid. Return only valid JSON that matches the schema exactly.",
+        );
+    }
 
     let payload = json!({
         "model": model,
@@ -372,11 +398,26 @@ fn call_openrouter(api_key: &str, answer: &str) -> Result<Vec<ProviderSchema>, S
         .and_then(Value::as_str)
         .ok_or_else(|| "OpenRouter response missing choices[0].message.content".to_string())?;
 
-    let parsed: ModelProvidersResponse = serde_json::from_str(content)
-        .map_err(|err| format!("model returned invalid JSON: {err}"))?;
+    parse_model_providers_response(content)
+}
 
-    validate_provider_schemas(&parsed.providers)?;
-    Ok(parsed.providers)
+fn parse_model_providers_response(content: &str) -> Result<Vec<ProviderSchema>, String> {
+    if let Ok(parsed) = serde_json::from_str::<ModelProvidersResponse>(content) {
+        validate_provider_schemas(&parsed.providers)?;
+        return Ok(parsed.providers);
+    }
+
+    if let Ok(providers) = serde_json::from_str::<Vec<ProviderSchema>>(content) {
+        validate_provider_schemas(&providers)?;
+        return Ok(providers);
+    }
+
+    Err(
+        serde_json::from_str::<ModelProvidersResponse>(content)
+            .err()
+            .map(|err| format!("model returned invalid JSON: {err}"))
+            .unwrap_or_else(|| "model returned invalid JSON".to_string()),
+    )
 }
 
 fn validate_provider_schemas(providers: &[ProviderSchema]) -> Result<(), String> {
@@ -445,11 +486,18 @@ mod tests {
     #[test]
     fn accepts_full_provider_objects() {
         let response = r#"{"providers":[{"id":"custom-openai","name":"Custom OpenAI","base_url":"https://example.com/v1","type":"openai","authentication":"api_key"}]}"#;
-        let parsed: ModelProvidersResponse = serde_json::from_str(response).unwrap();
-        let providers = parsed.providers;
+        let providers = parse_model_providers_response(response).unwrap();
         assert_eq!(providers.len(), 1);
         assert_eq!(providers[0].id, "custom-openai");
         assert_eq!(providers[0].base_url, "https://example.com/v1");
+    }
+
+    #[test]
+    fn accepts_bare_provider_arrays() {
+        let response = r#"[{"id":"custom-openai","name":"Custom OpenAI","base_url":"https://example.com/v1","type":"openai","authentication":"api_key"}]"#;
+        let providers = parse_model_providers_response(response).unwrap();
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "custom-openai");
     }
 }
 

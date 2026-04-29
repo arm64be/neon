@@ -181,7 +181,6 @@ fn onboarding_completion_replaces_itself_with_preset() {
     let old_model = env::var("NEON_ONBOARDING_MODEL").ok();
     let old_api_base = env::var("NEON_ONBOARDING_API_BASE").ok();
     let old_api_key = env::var("NEON_ONBOARDING_API_KEY").ok();
-    let old_confirm = env::var("NEON_ONBOARDING_CONFIRM_INSTALL").ok();
     let old_preset_source = env::var("NEON_ONBOARDING_PRESET_SOURCE").ok();
     let old_intro = env::var("NEON_ONBOARDING_INTRODUCTION").ok();
     let old_providers = env::var("NEON_ONBOARDING_PROVIDERS").ok();
@@ -211,7 +210,6 @@ fn onboarding_completion_replaces_itself_with_preset() {
     env::set_var("NEON_ONBOARDING_CUSTOM_INSTRUCTIONS", "yes");
     env::set_var("NEON_ONBOARDING_INSTRUCTIONS", "Prefer tests.");
     env::set_var("NEON_ONBOARDING_THEME", "tokyo-night");
-    env::set_var("NEON_ONBOARDING_CONFIRM_INSTALL", "yes");
     env::set_var(
         "NEON_ONBOARDING_PRESET_SOURCE",
         preset.to_string_lossy().as_ref(),
@@ -247,7 +245,6 @@ fn onboarding_completion_replaces_itself_with_preset() {
     restore_env("NEON_ONBOARDING_MODEL", old_model);
     restore_env("NEON_ONBOARDING_API_BASE", old_api_base);
     restore_env("NEON_ONBOARDING_API_KEY", old_api_key);
-    restore_env("NEON_ONBOARDING_CONFIRM_INSTALL", old_confirm);
     restore_env("NEON_ONBOARDING_PRESET_SOURCE", old_preset_source);
     restore_env("NEON_ONBOARDING_INTRODUCTION", old_intro);
     restore_env("NEON_ONBOARDING_PROVIDERS", old_providers);

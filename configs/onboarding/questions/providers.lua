@@ -9,6 +9,7 @@ function M.run(ctx)
   })
 
   ctx.answers.providers = answer
+  ctx.interface:working("what providers do you want to connect?", "working...")
   local providers = provider_api.providers(answer, ctx.answers)
   ctx.user_data.providers = providers
   ctx.secrets.providers = {}

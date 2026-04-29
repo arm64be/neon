@@ -31,6 +31,14 @@ local function wrapped_lines(text, width)
   return math.max(1, lines)
 end
 
+local function max_line_width(lines)
+  local width = 0
+  for _, line in ipairs(lines) do
+    width = math.max(width, #(tostring(line or "")))
+  end
+  return width
+end
+
 function M.new(opts)
   opts = opts or {}
 
@@ -52,6 +60,10 @@ function M.new(opts)
     end
   end
 
+  function api:set_theme(name)
+    self.theme = themes.require(name)
+  end
+
   function api:reset()
     self.history = {}
   end
@@ -68,12 +80,23 @@ function M.new(opts)
     return neon.env_or("NEON_ONBOARDING_" .. stage, default or "")
   end
 
-  function api:layout(question, input, placeholder, options, selected, secret)
+  function api:layout(question, input, placeholder, options, selected, secret, opts)
     local ui = self
-    local content_width = 48
+    opts = opts or {}
+    local max_content_width = 48
+    local term_width = 80
+    local term_height = 24
     local visible_input = input
     local input_len = #input
     local input_style = { fg = ui.theme.ui.text, bold = true }
+
+    if ui.core then
+      local ok_size, width, height = pcall(ui.core.size, ui.core)
+      if ok_size then
+        term_width = tonumber(width) or term_width
+        term_height = tonumber(height) or term_height
+      end
+    end
 
     if input == "" then
       visible_input = placeholder or ""
@@ -83,14 +106,41 @@ function M.new(opts)
     end
 
     local history_lines = {}
-    local history_height = 0
     for i = math.max(1, #ui.history - 2), #ui.history do
       local age = #ui.history - i + 1
       local prefix = string.rep("·", age)
       history_lines[#history_lines + 1] = prefix .. " " .. ui.history[i].question
       history_lines[#history_lines + 1] = "  " .. tostring(ui.history[i].answer)
+      if i < #ui.history then
+        history_lines[#history_lines + 1] = ""
+      end
     end
     local history_text = table.concat(history_lines, "\n")
+
+    local question_text = "· " .. question
+    local vertical_options = opts.direction == "vertical"
+    local input_text
+    if options then
+      if vertical_options then
+        local option_lines = {}
+        for _, option in ipairs(options) do
+          option_lines[#option_lines + 1] = option
+        end
+        input_text = table.concat(option_lines, "\n")
+      else
+        input_text = table.concat(options, "   ")
+      end
+    else
+      input_text = visible_input
+    end
+    local content_width = math.min(max_content_width, math.max(
+      1,
+      max_line_width(history_lines),
+      #question_text,
+      #input_text
+    ))
+
+    local history_height = 0
     for _, line in ipairs(history_lines) do
       history_height = history_height + wrapped_lines(line, content_width)
     end
@@ -98,108 +148,184 @@ function M.new(opts)
       history_height = 0
     end
 
-    local question_text = "· " .. question
     local question_height = wrapped_lines(question_text, content_width)
-    local input_text = options and table.concat(options, "   ") or visible_input
-    local input_height = wrapped_lines(input_text, content_width)
-    local spacer_height = history_height > 0 and 1 or 0
-    local content_height = history_height + spacer_height + question_height + input_height
+    local input_height = vertical_options and #options or wrapped_lines(input_text, content_width)
+    local between_history_height = history_height > 0 and 1 or 0
+    local content_height = history_height + between_history_height + question_height + input_height
+    local left_width = math.max(0, math.floor((term_width - content_width) / 2))
+    local right_width = math.max(0, term_width - left_width - content_width)
+    local top_height = math.max(0, math.floor((term_height - content_height) / 2))
+    local bottom_height = math.max(0, term_height - top_height - content_height)
     local cursor_x = input_len % content_width
     local cursor_y = math.floor(input_len / content_width)
+    local show_cursor = opts.show_cursor ~= false and not options
+
+    local content_constraints = {}
+    local content_children = {}
+
+    if history_height > 0 then
+      content_constraints[#content_constraints + 1] = "length:" .. tostring(history_height)
+      content_children[#content_children + 1] = {
+        id = "history",
+        render = function(_ctx)
+          return {
+            kind = "paragraph",
+            text = history_text,
+            wrap = true,
+            style = {
+              fg = ui.theme.ui.muted,
+              bg = ui.theme.ui.background,
+              modifiers = { "dim" },
+            },
+          }
+        end,
+      }
+
+      content_constraints[#content_constraints + 1] = "length:1"
+      content_children[#content_children + 1] = {
+        id = "history_gap",
+        render = function(_ctx)
+          return {
+            kind = "paragraph",
+            text = "",
+            wrap = false,
+            style = { bg = ui.theme.ui.background },
+          }
+        end,
+      }
+    end
+
+    content_constraints[#content_constraints + 1] = "length:" .. tostring(question_height)
+    content_children[#content_children + 1] = {
+      id = "question",
+      render = function(_ctx)
+        return {
+          kind = "paragraph",
+          text = question_text,
+          wrap = true,
+          style = {
+            fg = ui.theme.ui.text,
+            bg = ui.theme.ui.background,
+            bold = true,
+          },
+        }
+      end,
+    }
+
+    local input_child
+    if vertical_options then
+      local option_constraints = {}
+      local option_children = {}
+      for idx, option in ipairs(options) do
+        option_constraints[#option_constraints + 1] = "length:1"
+        option_children[#option_children + 1] = {
+          id = "option_" .. tostring(idx),
+          render = function(_ctx)
+            return {
+              kind = "paragraph",
+              text = option,
+              wrap = false,
+              style = idx == selected and {
+                fg = ui.theme.ui.accent,
+                bg = ui.theme.ui.background,
+                bold = true,
+              } or {
+                fg = ui.theme.ui.subtle,
+                bg = ui.theme.ui.background,
+              },
+            }
+          end,
+        }
+      end
+
+      input_child = {
+        id = "input",
+        direction = "vertical",
+        constraints = option_constraints,
+        children = option_children,
+      }
+    else
+      input_child = {
+        id = "input",
+        render = function(_ctx)
+          if options then
+            local segments = {}
+            for idx, option in ipairs(options) do
+              segments[#segments + 1] = {
+                text = option .. (idx < #options and "   " or ""),
+                style = idx == selected and {
+                  fg = ui.theme.ui.accent,
+                  bold = true,
+                } or {
+                  fg = ui.theme.ui.subtle,
+                },
+              }
+            end
+
+            return {
+              kind = "inline",
+              segments = segments,
+              wrap = true,
+              style = { fg = ui.theme.ui.text, bg = ui.theme.ui.background },
+            }
+          end
+
+          return {
+            kind = "paragraph",
+            text = visible_input,
+            wrap = true,
+            style = {
+              fg = input_style.fg,
+              bg = ui.theme.ui.background,
+              bold = input_style.bold,
+            },
+            cursor = show_cursor,
+            cursor_x = cursor_x,
+            cursor_y = cursor_y,
+            cursor_offset_x = 0,
+            cursor_offset_y = 0,
+          }
+        end,
+      }
+    end
+
+    content_constraints[#content_constraints + 1] = "length:" .. tostring(input_height)
+    content_children[#content_children + 1] = input_child
 
     return {
       id = "root",
+      render = function(_ctx)
+        return {
+          kind = "paragraph",
+          text = "",
+          wrap = false,
+          clear = true,
+          style = { bg = ui.theme.ui.background },
+        }
+      end,
       direction = "vertical",
-      constraints = { "ratio:1:1", "length:" .. tostring(content_height), "ratio:1:1" },
+      constraints = {
+        "length:" .. tostring(top_height),
+        "length:" .. tostring(content_height),
+        "length:" .. tostring(bottom_height),
+      },
       children = {
         { id = "top" },
         {
           id = "middle",
           direction = "horizontal",
-          constraints = { "ratio:1:1", "length:48", "ratio:1:1" },
+          constraints = {
+            "length:" .. tostring(left_width),
+            "length:" .. tostring(content_width),
+            "length:" .. tostring(right_width),
+          },
           children = {
             { id = "left" },
             {
               id = "content",
               direction = "vertical",
-              constraints = {
-                "length:" .. tostring(history_height),
-                "length:" .. tostring(spacer_height),
-                "length:" .. tostring(question_height),
-                "length:" .. tostring(input_height),
-              },
-              children = {
-                {
-                  id = "history",
-                  render = function(_ctx)
-                    return {
-                      kind = "paragraph",
-                      text = history_text,
-                      wrap = true,
-                      style = { fg = ui.theme.ui.subtle, modifiers = { "dim" } },
-                    }
-                  end,
-                },
-                {
-                  id = "spacer",
-                  render = function(_ctx)
-                    return {
-                      kind = "paragraph",
-                      text = "",
-                      style = { fg = ui.theme.ui.subtle },
-                    }
-                  end,
-                },
-                {
-                  id = "question",
-                  render = function(_ctx)
-                    return {
-                      kind = "paragraph",
-                      text = question_text,
-                      wrap = true,
-                      style = { fg = ui.theme.ui.text, bold = true },
-                    }
-                  end,
-                },
-                {
-                  id = "input",
-                  render = function(_ctx)
-                    if options then
-                      local segments = {}
-                      for idx, option in ipairs(options) do
-                        segments[#segments + 1] = {
-                          text = option .. (idx < #options and "   " or ""),
-                          style = idx == selected and {
-                            fg = ui.theme.ui.accent,
-                            bold = true,
-                          } or {
-                            fg = ui.theme.ui.subtle,
-                          },
-                        }
-                      end
-
-                      return {
-                        kind = "inline",
-                        segments = segments,
-                        wrap = true,
-                        style = { fg = ui.theme.ui.text },
-                      }
-                    end
-
-                    return {
-                      kind = "paragraph",
-                      text = visible_input,
-                      wrap = true,
-                      style = input_style,
-                      cursor = true,
-                      cursor_x = cursor_x,
-                      cursor_y = cursor_y,
-                      cursor_offset_x = 0,
-                      cursor_offset_y = 0,
-                    }
-                  end,
-                },
-              },
+              constraints = content_constraints,
+              children = content_children,
             },
             { id = "right" },
           },
@@ -263,6 +389,19 @@ function M.new(opts)
     end
   end
 
+  function api:working(question, message)
+    message = message or "working..."
+    if not self.core then
+      io.write(message .. "\n")
+      io.flush()
+      return
+    end
+
+    self.core:set_input("")
+    self.core:set_layout(self:layout(message, "", "", nil, nil, false, { show_cursor = false }))
+    self.core:render()
+  end
+
   function api:select(stage, question, options, opts)
     opts = opts or {}
     local selected = opts.default_index or 1
@@ -279,18 +418,28 @@ function M.new(opts)
       return options[selected], selected
     end
 
+    if opts.preview then
+      opts.preview(options[selected], selected)
+    end
+
     while true do
-      self.core:set_layout(self:layout(question, "", nil, options, selected, false))
+      self.core:set_layout(self:layout(question, "", nil, options, selected, false, opts))
       self.core:render()
       local key = self.core:read_key(100)
       if key then
         if is_abort_key(key) then
           error("onboarding aborted", 0)
         end
-        if key.name == "right" or key.name == "tab" or key.char == "l" then
+        if key.name == "right" or key.name == "tab" or key.char == "l" or key.name == "down" or key.char == "j" then
           selected = clamp_index(selected + 1, options)
-        elseif key.name == "left" or key.char == "h" then
+          if opts.preview then
+            opts.preview(options[selected], selected)
+          end
+        elseif key.name == "left" or key.char == "h" or key.name == "up" or key.char == "k" then
           selected = clamp_index(selected - 1, options)
+          if opts.preview then
+            opts.preview(options[selected], selected)
+          end
         elseif key.name == "enter" then
           self:push(question, options[selected], false)
           return options[selected], selected

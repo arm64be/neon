@@ -82,14 +82,6 @@ local function install_preset()
   local backup = target .. ".onboarding-backup"
   local preset_checkout = target .. ".preset-download"
 
-  local confirmed = ctx.interface:select("CONFIRM_INSTALL", "install the ready-to-build preset now?", {
-    "yes",
-    "no",
-  })
-  if confirmed ~= "yes" then
-    return false
-  end
-
   local fetch_command
   local preset_source
   local themes_source
@@ -133,14 +125,8 @@ local function main()
   require("questions.personalization").run(ctx)
   require("questions.aesthetics").run(ctx)
 
-  if install_preset() then
-    print("Preset installed. Run Neon again with this config root to start.")
-  else
-    write_env(neon.config_root)
-    write_user_data(neon.config_root)
-    write_selected_providers(neon.config_root)
-    print("Saved onboarding data without replacing the config.")
-  end
+  install_preset()
+  print("Preset installed. Run Neon again with this config root to start.")
 end
 
 local ok, err = xpcall(main, function(error_value)
