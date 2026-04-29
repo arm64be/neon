@@ -59,6 +59,10 @@ function M.providers(answer, answers)
   )
 
   if response.status >= 400 then
+    local body = tostring(response.body or ""):gsub("%s+$", "")
+    if body ~= "" then
+      error(("provider onboarding failed with HTTP %d: %s"):format(response.status, body))
+    end
     error(("provider onboarding failed with HTTP %d"):format(response.status))
   end
 

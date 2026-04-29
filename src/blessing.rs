@@ -8,9 +8,10 @@ use ratatui::{
         execute,
         terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
     },
-    layout::{Constraint, Direction, Rect},
+    layout::{Alignment, Constraint, Direction, Position, Rect},
     style::{Color, Modifier, Style},
     symbols,
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Sparkline, Tabs, Wrap},
     Terminal,
 };
@@ -255,6 +256,14 @@ fn parse_style(style_table: Option<Table>) -> Result<Style> {
     Ok(style)
 }
 
+fn parse_alignment(value: Option<String>) -> Alignment {
+    match value.as_deref() {
+        Some("center") => Alignment::Center,
+        Some("right") => Alignment::Right,
+        _ => Alignment::Left,
+    }
+}
+
 fn parse_borders(spec: Option<Value>) -> Borders {
     match spec {
         Some(Value::Boolean(false)) => Borders::NONE,
@@ -303,6 +312,7 @@ fn render_widget(frame: &mut ratatui::Frame, area: Rect, widget: Table) -> Resul
     let kind: String = widget.get("kind").unwrap_or_else(|_| "paragraph".into());
     let block = build_block(widget.get("block").ok());
     let style = parse_style(widget.get("style").ok())?;
+    let alignment = parse_alignment(widget.get("align").ok());
 
     if widget.get::<bool>("clear").unwrap_or(false) {
         frame.render_widget(Clear, area);
@@ -311,7 +321,28 @@ fn render_widget(frame: &mut ratatui::Frame, area: Rect, widget: Table) -> Resul
     match kind.as_str() {
         "paragraph" => {
             let text: String = widget.get("text").unwrap_or_default();
-            let mut paragraph = Paragraph::new(text).style(style);
+            let mut paragraph = Paragraph::new(text).style(style).alignment(alignment);
+            if let Some(block) = block {
+                paragraph = paragraph.block(block);
+            }
+            if widget.get::<bool>("wrap").unwrap_or(true) {
+                paragraph = paragraph.wrap(Wrap { trim: false });
+            }
+            frame.render_widget(paragraph, area);
+        }
+        "inline" => {
+            let segments: Option<Table> = widget.get("segments").ok();
+            let mut spans = Vec::new();
+            if let Some(segments) = segments {
+                for entry in segments.sequence_values::<Table>() {
+                    let entry = entry?;
+                    let text: String = entry.get("text").unwrap_or_default();
+                    let segment_style = parse_style(entry.get("style").ok())?;
+                    spans.push(Span::styled(text, segment_style));
+                }
+            }
+            let mut paragraph = Paragraph::new(Text::from(Line::from(spans))).style(style);
+            paragraph = paragraph.alignment(alignment);
             if let Some(block) = block {
                 paragraph = paragraph.block(block);
             }
@@ -370,12 +401,32 @@ fn render_widget(frame: &mut ratatui::Frame, area: Rect, widget: Table) -> Resul
             }
             let selected = widget.get::<usize>("selected").unwrap_or(0);
             let mut tabs = Tabs::new(titles).select(selected).style(style);
+            if let Ok(highlight_style) = parse_style(widget.get("highlight_style").ok()) {
+                tabs = tabs.highlight_style(highlight_style);
+            }
             if let Some(block) = block {
                 tabs = tabs.block(block);
             }
             frame.render_widget(tabs, area);
         }
         _ => {}
+    }
+
+    if widget.get::<bool>("cursor").unwrap_or(false) {
+        let cursor_x = widget.get::<u16>("cursor_x").unwrap_or(0);
+        let cursor_y = widget.get::<u16>("cursor_y").unwrap_or(0);
+        let cursor_offset_x = widget.get::<u16>("cursor_offset_x").unwrap_or(0);
+        let cursor_offset_y = widget.get::<u16>("cursor_offset_y").unwrap_or(0);
+        frame.set_cursor_position(Position {
+            x: area
+                .x
+                .saturating_add(cursor_offset_x)
+                .saturating_add(cursor_x),
+            y: area
+                .y
+                .saturating_add(cursor_offset_y)
+                .saturating_add(cursor_y),
+        });
     }
 
     Ok(())

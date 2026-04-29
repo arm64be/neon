@@ -1,7 +1,6 @@
 use std::{
     collections::HashMap,
-    env,
-    fs,
+    env, fs,
     io::{self, Read, Write},
     net::{TcpListener, TcpStream},
     path::{Path, PathBuf},
@@ -9,7 +8,12 @@ use std::{
     thread,
 };
 
+use serde::{Deserialize, Serialize};
+use serde_json::{json, Value};
+
 const DEFAULT_ADDR: &str = "127.0.0.1:3000";
+const OPENROUTER_URL: &str = "https://openrouter.ai/api/v1/chat/completions";
+const DEFAULT_MODEL: &str = "openai/gpt-4.1-mini";
 
 #[derive(Clone)]
 struct Asset {
@@ -37,9 +41,7 @@ impl Site {
 
     fn load_static_dir(&mut self, dir: &Path) -> io::Result<()> {
         for path in walk_files(dir)? {
-            let rel = path
-                .strip_prefix(dir)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            let rel = path.strip_prefix(dir).map_err(io::Error::other)?;
             let url_path = to_lower_url_path(rel);
             let bytes = fs::read(&path)?;
             let content_type = content_type_for_path(&path);
@@ -54,7 +56,8 @@ impl Site {
 
             if url_path.ends_with("/index.html") {
                 let dir_path = url_path.trim_end_matches("index.html");
-                self.static_assets.insert(dir_path.to_string(), asset.clone());
+                self.static_assets
+                    .insert(dir_path.to_string(), asset.clone());
             }
 
             self.static_assets.insert(url_path.clone(), asset.clone());
@@ -73,9 +76,7 @@ impl Site {
                 continue;
             }
 
-            let rel = path
-                .strip_prefix(dir)
-                .map_err(|err| io::Error::new(io::ErrorKind::Other, err))?;
+            let rel = path.strip_prefix(dir).map_err(io::Error::other)?;
             let rendered = render_markdown_page(&path, &fs::read_to_string(&path)?)?;
             let asset = Asset {
                 content_type: "text/html; charset=utf-8",
@@ -85,9 +86,11 @@ impl Site {
             let route = format!("/docs/{}", to_lower_url_path(rel));
             self.docs_pages.insert(route.clone(), asset.clone());
 
-            if rel.file_name().and_then(|name| name.to_str()).is_some_and(|name| {
-                name.eq_ignore_ascii_case("INDEX.md")
-            }) {
+            if rel
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.eq_ignore_ascii_case("INDEX.md"))
+            {
                 let dir_route = match rel.parent() {
                     Some(parent) if !parent.as_os_str().is_empty() => {
                         format!("/docs/{}/", to_lower_url_path(parent))
@@ -198,6 +201,13 @@ fn handle_connection(mut stream: TcpStream, site: &Site) -> io::Result<()> {
     let target = parts.next().unwrap_or("/");
     let path = target.split('?').next().unwrap_or("/");
 
+    if method == "POST" && path == "/v1/onboarding/providers" {
+        let body = read_request_body(&mut stream, &request, &buffer[..size])?;
+        let response = onboarding_providers(&body);
+        write_json_response(&mut stream, response.status, response.reason, response.body)?;
+        return Ok(());
+    }
+
     if method != "GET" && method != "HEAD" {
         write_response(
             &mut stream,
@@ -212,13 +222,7 @@ fn handle_connection(mut stream: TcpStream, site: &Site) -> io::Result<()> {
     if let Some(asset) = site.resolve(path) {
         let body = asset.bytes.as_slice();
         let body = if method == "HEAD" { &[][..] } else { body };
-        write_response(
-            &mut stream,
-            200,
-            "OK",
-            asset.content_type,
-            body,
-        )?;
+        write_response(&mut stream, 200, "OK", asset.content_type, body)?;
         return Ok(());
     }
 
@@ -230,6 +234,287 @@ fn handle_connection(mut stream: TcpStream, site: &Site) -> io::Result<()> {
         b"not found",
     )?;
     Ok(())
+}
+
+#[derive(Deserialize)]
+struct OnboardingProvidersRequest {
+    stage: Option<String>,
+    answer: String,
+    answers: Option<Value>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+struct ProviderSchema {
+    id: String,
+    name: String,
+    base_url: String,
+    #[serde(rename = "type")]
+    provider_type: String,
+    authentication: String,
+}
+
+#[derive(Deserialize)]
+struct ModelProvidersResponse {
+    providers: Vec<ProviderSchema>,
+}
+
+#[derive(Serialize)]
+struct OnboardingProvidersResponse {
+    providers: Vec<ProviderSchema>,
+}
+
+struct JsonResponse {
+    status: u16,
+    reason: &'static str,
+    body: Value,
+}
+
+fn onboarding_providers(body: &[u8]) -> JsonResponse {
+    let request: OnboardingProvidersRequest = match serde_json::from_slice(body) {
+        Ok(request) => request,
+        Err(err) => {
+            return json_error(400, "Bad Request", format!("invalid request JSON: {err}"));
+        }
+    };
+
+    let _ = request.stage.as_deref();
+    let _ = request.answers.as_ref();
+
+    if request.answer.trim().is_empty() {
+        return json_error(400, "Bad Request", "answer is required".to_string());
+    }
+
+    let openrouter_key = match env::var("OPENROUTER_API_KEY") {
+        Ok(key) if !key.trim().is_empty() => key,
+        _ => {
+            return json_error(
+                500,
+                "Internal Server Error",
+                "OPENROUTER_API_KEY is not set".to_string(),
+            );
+        }
+    };
+
+    match call_openrouter(&openrouter_key, &request.answer) {
+        Ok(providers) => JsonResponse {
+            status: 200,
+            reason: "OK",
+            body: json!(OnboardingProvidersResponse { providers }),
+        },
+        Err(err) => json_error(502, "Bad Gateway", err),
+    }
+}
+
+fn call_openrouter(api_key: &str, answer: &str) -> Result<Vec<ProviderSchema>, String> {
+    let model = env::var("NEON_ONBOARDING_MODEL").unwrap_or_else(|_| DEFAULT_MODEL.to_string());
+    let system = onboarding_system_prompt();
+
+    let payload = json!({
+        "model": model,
+        "temperature": 0.0,
+        "messages": [
+            {
+                "role": "system",
+                "content": system
+            },
+            {
+                "role": "user",
+                "content": answer
+            }
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "provider_schemas",
+                "strict": true,
+                "schema": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "providers": {
+                            "type": "array",
+                            "items": {
+                                "type": "object",
+                                "additionalProperties": false,
+                                "properties": {
+                                    "id": { "type": "string" },
+                                    "name": { "type": "string" },
+                                    "base_url": { "type": "string" },
+                                    "type": { "type": "string", "enum": ["openai", "anthropic"] },
+                                    "authentication": { "type": "string", "enum": ["none", "api_key"] }
+                                },
+                                "required": ["id", "name", "base_url", "type", "authentication"]
+                            }
+                        }
+                    },
+                    "required": ["providers"]
+                }
+            }
+        }
+    });
+
+    let response: Value = ureq::post(OPENROUTER_URL)
+        .set("Authorization", &format!("Bearer {api_key}"))
+        .set("Content-Type", "application/json")
+        .set("HTTP-Referer", "https://github.com/openai/codex")
+        .set("X-Title", "neon onboarding providers")
+        .send_json(payload)
+        .map_err(|err| format!("OpenRouter request failed: {err}"))?
+        .into_json()
+        .map_err(|err| format!("failed to decode OpenRouter response JSON: {err}"))?;
+
+    let content = response
+        .get("choices")
+        .and_then(Value::as_array)
+        .and_then(|choices| choices.first())
+        .and_then(|choice| choice.get("message"))
+        .and_then(|msg| msg.get("content"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| "OpenRouter response missing choices[0].message.content".to_string())?;
+
+    let parsed: ModelProvidersResponse = serde_json::from_str(content)
+        .map_err(|err| format!("model returned invalid JSON: {err}"))?;
+
+    validate_provider_schemas(&parsed.providers)?;
+    Ok(parsed.providers)
+}
+
+fn validate_provider_schemas(providers: &[ProviderSchema]) -> Result<(), String> {
+    if providers.is_empty() {
+        return Err("provider list is empty".to_string());
+    }
+
+    for provider in providers {
+        if !provider
+            .id
+            .chars()
+            .all(|ch| ch.is_ascii_lowercase() || ch == '-')
+        {
+            return Err(format!(
+                "provider id must match [a-z-]+, got {}",
+                provider.id
+            ));
+        }
+        if provider.provider_type != "openai" && provider.provider_type != "anthropic" {
+            return Err(format!(
+                "provider type must be openai or anthropic, got {}",
+                provider.provider_type
+            ));
+        }
+        if provider.authentication != "none" && provider.authentication != "api_key" {
+            return Err(format!(
+                "provider authentication must be none or api_key, got {}",
+                provider.authentication
+            ));
+        }
+        if provider.base_url.trim().is_empty() {
+            return Err(format!("provider {} has an empty base_url", provider.id));
+        }
+    }
+
+    Ok(())
+}
+
+fn onboarding_system_prompt() -> String {
+    [
+        "You are a provider parser for CLI onboarding.",
+        "Return JSON only and follow the provided JSON Schema exactly.",
+        "Parse user intent and return all providers they asked for.",
+        "Return each provider as a full object with id, name, base_url, type, and authentication.",
+        "If user mentions broad options (e.g. \"all common\"), include these common providers when relevant:",
+        "- openrouter: OpenRouter, base_url=https://openrouter.ai/api/v1, type=openai, authentication=api_key",
+        "- openai: OpenAI, base_url=https://api.openai.com/v1, type=openai, authentication=api_key",
+        "- anthropic: Anthropic, base_url=https://api.anthropic.com/v1, type=anthropic, authentication=api_key",
+        "- groq: Groq, base_url=https://api.groq.com/openai/v1, type=openai, authentication=api_key",
+        "- xai: xAI, base_url=https://api.x.ai/v1, type=openai, authentication=api_key",
+        "- deepseek: DeepSeek, base_url=https://api.deepseek.com/v1, type=openai, authentication=api_key",
+        "- mistral: Mistral, base_url=https://api.mistral.ai/v1, type=openai, authentication=api_key",
+        "- google-ai-studio: Google AI Studio (Gemini OpenAI compatibility), base_url=https://generativelanguage.googleapis.com/v1beta/openai, type=openai, authentication=api_key",
+        "- azure-openai: Azure OpenAI, base_url=https://{resource}.openai.azure.com/openai/v1, type=openai, authentication=api_key",
+        "- ollama-local: Ollama (local), base_url=http://localhost:11434/v1, type=openai, authentication=none",
+        "For unknown providers, infer a best-effort schema using openai type unless clearly anthropic.",
+        "Never include extra fields.",
+    ]
+    .join("\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn accepts_full_provider_objects() {
+        let response = r#"{"providers":[{"id":"custom-openai","name":"Custom OpenAI","base_url":"https://example.com/v1","type":"openai","authentication":"api_key"}]}"#;
+        let parsed: ModelProvidersResponse = serde_json::from_str(response).unwrap();
+        let providers = parsed.providers;
+        assert_eq!(providers.len(), 1);
+        assert_eq!(providers[0].id, "custom-openai");
+        assert_eq!(providers[0].base_url, "https://example.com/v1");
+    }
+}
+
+fn read_request_body(stream: &mut TcpStream, request: &str, initial: &[u8]) -> io::Result<Vec<u8>> {
+    let content_length = parse_content_length(request).unwrap_or(0);
+    let header_len = find_header_end(initial).unwrap_or(initial.len());
+    let already = if header_len <= initial.len() {
+        &initial[header_len..]
+    } else {
+        &[][..]
+    };
+
+    let mut body = Vec::with_capacity(content_length.max(already.len()));
+    body.extend_from_slice(already);
+
+    if content_length > body.len() {
+        let mut remaining = vec![0_u8; content_length - body.len()];
+        stream.read_exact(&mut remaining)?;
+        body.extend_from_slice(&remaining);
+    }
+
+    Ok(body)
+}
+
+fn parse_content_length(request: &str) -> Option<usize> {
+    for line in request.lines() {
+        if let Some((name, value)) = line.split_once(':') {
+            if name.trim().eq_ignore_ascii_case("content-length") {
+                return value.trim().parse::<usize>().ok();
+            }
+        }
+    }
+    None
+}
+
+fn find_header_end(bytes: &[u8]) -> Option<usize> {
+    bytes
+        .windows(4)
+        .position(|chunk| chunk == b"\r\n\r\n")
+        .map(|idx| idx + 4)
+}
+
+fn json_error(status: u16, reason: &'static str, message: String) -> JsonResponse {
+    JsonResponse {
+        status,
+        reason,
+        body: json!({ "error": message }),
+    }
+}
+
+fn write_json_response(
+    stream: &mut TcpStream,
+    status: u16,
+    reason: &str,
+    body: Value,
+) -> io::Result<()> {
+    let bytes = serde_json::to_vec(&body)
+        .unwrap_or_else(|_| b"{\"error\":\"serialization failed\"}".to_vec());
+    write_response(
+        stream,
+        status,
+        reason,
+        "application/json; charset=utf-8",
+        &bytes,
+    )
 }
 
 fn write_response(
@@ -284,7 +569,11 @@ fn to_lower_url_path(path: &Path) -> String {
 }
 
 fn content_type_for_path(path: &Path) -> &'static str {
-    match path.extension().and_then(|ext| ext.to_str()).unwrap_or_default() {
+    match path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .unwrap_or_default()
+    {
         "html" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
         "js" => "application/javascript; charset=utf-8",
@@ -390,10 +679,7 @@ fn render_markdown(markdown: &str) -> String {
                 output.push_str("</ul>");
                 in_list = false;
             }
-            output.push_str(&format!(
-                "<h{level}>{}</h{level}>",
-                render_inline(heading)
-            ));
+            output.push_str(&format!("<h{level}>{}</h{level}>", render_inline(heading)));
             continue;
         }
 
@@ -410,7 +696,11 @@ fn render_markdown(markdown: &str) -> String {
         }
 
         paragraph.push(trimmed.trim().to_string());
-        if lines.peek().map(|next| next.trim().is_empty()).unwrap_or(true) {
+        if lines
+            .peek()
+            .map(|next| next.trim().is_empty())
+            .unwrap_or(true)
+        {
             flush_paragraph(&mut output, &mut paragraph);
             if in_list {
                 output.push_str("</ul>");
@@ -503,7 +793,8 @@ fn render_inline(text: &str) -> String {
                     if close_bracket + 1 < chars.len() && chars[close_bracket + 1] == '(' {
                         if let Some(close_paren) = find_char(&chars, close_bracket + 2, ')') {
                             let label: String = chars[idx + 1..close_bracket].iter().collect();
-                            let url: String = chars[close_bracket + 2..close_paren].iter().collect();
+                            let url: String =
+                                chars[close_bracket + 2..close_paren].iter().collect();
                             let url = normalize_docs_link_url(&url);
                             output.push_str("<a href=\"");
                             output.push_str(&escape_html(&url));
