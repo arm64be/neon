@@ -21,20 +21,39 @@ local function is_abort_key(key)
   return key and key.ctrl and (key.char == "c" or key.char == "d" or key.name == "c" or key.name == "d")
 end
 
+local function text_len(value)
+  local s = tostring(value or "")
+  local ok, count = pcall(utf8.len, s)
+  if ok and count then
+    return count
+  end
+  return #s
+end
+
 local function wrapped_lines(text, width)
   width = math.max(1, width or 1)
   text = tostring(text or "")
   local lines = 0
+  local has_content = false
   for line in (text .. "\n"):gmatch("(.-)\n") do
-    lines = lines + math.max(1, math.ceil(#line / width))
+    if line:find("%S") then
+      has_content = true
+      lines = lines + math.ceil(text_len(line) / width)
+    end
   end
-  return math.max(1, lines)
+  if not has_content then
+    return 0
+  end
+  return lines
 end
 
 local function max_line_width(lines)
   local width = 0
   for _, line in ipairs(lines) do
-    width = math.max(width, #(tostring(line or "")))
+    local value = tostring(line or "")
+    if value:find("%S") then
+      width = math.max(width, text_len(value))
+    end
   end
   return width
 end
@@ -87,7 +106,7 @@ function M.new(opts)
     local term_width = 80
     local term_height = 24
     local visible_input = input
-    local input_len = #input
+    local input_len = text_len(input)
     local input_style = { fg = ui.theme.ui.text, bold = true }
 
     if ui.core then
@@ -110,9 +129,9 @@ function M.new(opts)
       local age = #ui.history - i + 1
       local prefix = string.rep("·", age)
       history_lines[#history_lines + 1] = prefix .. " " .. ui.history[i].question
-      history_lines[#history_lines + 1] = "  " .. tostring(ui.history[i].answer)
-      if i < #ui.history then
-        history_lines[#history_lines + 1] = ""
+      local answer = tostring(ui.history[i].answer or "")
+      if answer:find("%S") then
+        history_lines[#history_lines + 1] = "  " .. answer
       end
     end
     local history_text = table.concat(history_lines, "\n")
@@ -136,8 +155,8 @@ function M.new(opts)
     local content_width = math.min(max_content_width, math.max(
       1,
       max_line_width(history_lines),
-      #question_text,
-      #input_text
+      text_len(question_text),
+      text_len(input_text)
     ))
 
     local history_height = 0
@@ -148,8 +167,8 @@ function M.new(opts)
       history_height = 0
     end
 
-    local question_height = wrapped_lines(question_text, content_width)
-    local input_height = vertical_options and #options or wrapped_lines(input_text, content_width)
+    local question_height = math.max(1, wrapped_lines(question_text, content_width))
+    local input_height = vertical_options and #options or math.max(1, wrapped_lines(input_text, content_width))
     local between_history_height = history_height > 0 and 1 or 0
     local content_height = history_height + between_history_height + question_height + input_height
     local left_width = math.max(0, math.floor((term_width - content_width) / 2))
