@@ -9,7 +9,7 @@ function M.run(ctx)
 
   if choice == "yes" then
     ctx.user_data.instructions = ctx.interface:input("INSTRUCTIONS", "what should Neon keep in mind?", {
-      placeholder = "Prefer concise answers and ask before destructive changes.",
+      placeholder = "Be concise.",
     })
   else
     ctx.user_data.instructions = ""

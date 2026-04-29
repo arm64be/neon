@@ -30,12 +30,13 @@
 
 - `ui:poll_event([timeout_ms]) -> event|nil`
 - `ui:read_key([timeout_ms]) -> key_event|nil`
+- `ui:read_textarea_key([timeout_ms], [multiline]) -> event|nil`
 - `ui:read_line() -> string`
 
 `read_line()` behavior:
 
-- character keys append
-- backspace removes
+- text editing uses the active `textarea` widget state
+- Shift+Enter inserts a newline
 - enter returns line and clears input
 - esc returns empty string and clears input
 
@@ -98,10 +99,20 @@ Common widget fields:
 Kinds:
 
 - `paragraph`: `text`, `wrap?`
+- `textarea`: active input editor, with `placeholder?`, `placeholder_style?`, `wrap_mode?`, `mask?`, `cursor_style?`, `cursor_line_style?`
 - `list`: `items`
 - `tabs`: `titles`, `selected`
 - `gauge`: `ratio`, `label?`
 - `sparkline`: `values`, `bar_set?`
+
+`textarea` is the built-in input component. It renders and edits the UI object's current input state from `ui:set_input`, `ui:input`, `ui:read_textarea_key`, and `ui:read_line`.
+
+Textarea `wrap_mode` values:
+
+- `"word_or_glyph"` (default)
+- `"word"`
+- `"glyph"`
+- `"none"`
 
 ## Block Spec
 

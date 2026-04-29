@@ -44,10 +44,13 @@ function M.new(opts, blessing)
         {
           render = function(ctx)
             return {
-              kind = "paragraph",
-              text = "you> " .. (ctx.input or ""),
+              kind = "textarea",
+              placeholder = "you> ",
+              placeholder_style = { fg = ui.theme.ui.subtle, bg = ui.theme.ui.input },
+              wrap_mode = "word_or_glyph",
               block = { title = "Input", borders = "all" },
               style = { fg = ui.theme.ui.text, bg = ui.theme.ui.input },
+              cursor_style = { fg = ui.theme.ui.input, bg = ui.theme.ui.cursor },
             }
           end,
         },

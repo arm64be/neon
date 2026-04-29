@@ -448,8 +448,9 @@ fn blessing_module_loads() {
             {
               render = function(ctx)
                 return {
-                  kind = "paragraph",
-                  text = "body:" .. (ctx.input or ""),
+                  kind = "textarea",
+                  placeholder = "body",
+                  wrap_mode = "word_or_glyph",
                   block = { title = "body", borders = "all" },
                 }
               end
@@ -457,10 +458,13 @@ fn blessing_module_loads() {
           }
         })
         ui:set_input("hello")
+        assert(ui:input() == "hello")
         local ok1, ev = pcall(function() return ui:poll_event(0) end)
         assert(ok1 or tostring(ev):find("Failed to initialize input reader") ~= nil)
         local ok2, key = pcall(function() return ui:read_key(0) end)
         assert(ok2 or tostring(key):find("Failed to initialize input reader") ~= nil)
+        local ok3, input_key = pcall(function() return ui:read_textarea_key(0, true) end)
+        assert(ok3 or tostring(input_key):find("Failed to initialize input reader") ~= nil)
     "#,
         "blessing-smoke.lua",
     )

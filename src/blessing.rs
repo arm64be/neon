@@ -15,6 +15,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Sparkline, Tabs, Wrap},
     Terminal,
 };
+use ratatui_textarea::{CursorMove, Input, Key, TextArea, WrapMode};
 
 fn rt_err(err: impl std::fmt::Display) -> mlua::Error {
     mlua::Error::RuntimeError(err.to_string())
@@ -22,8 +23,15 @@ fn rt_err(err: impl std::fmt::Display) -> mlua::Error {
 
 type BlessingTerminal = Terminal<CrosstermBackend<std::io::Stdout>>;
 
+struct RenderState<'a> {
+    input: &'a str,
+    textarea: &'a mut TextArea<'static>,
+    frame_no: u64,
+}
+
 struct BlessingState {
     input: String,
+    textarea: TextArea<'static>,
     terminal: Option<BlessingTerminal>,
     layout_key: Option<RegistryKey>,
     frame: u64,
@@ -33,6 +41,7 @@ impl BlessingState {
     fn new() -> Self {
         Self {
             input: String::new(),
+            textarea: textarea_from_text(""),
             terminal: None,
             layout_key: None,
             frame: 0,
@@ -82,8 +91,9 @@ impl BlessingState {
         };
 
         let root: Table = lua.registry_value(layout_key)?;
-        let input = self.input.clone();
         let frame_no = self.frame;
+        let textarea = &mut self.textarea;
+        let input = textarea_text(textarea);
 
         let terminal = self
             .terminal
@@ -93,7 +103,18 @@ impl BlessingState {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                let _ = render_node(lua, frame, root.clone(), area, &input, frame_no, "root");
+                let _ = render_node(
+                    lua,
+                    frame,
+                    root.clone(),
+                    area,
+                    &mut RenderState {
+                        input: &input,
+                        textarea,
+                        frame_no,
+                    },
+                    "root",
+                );
             })
             .map_err(rt_err)?;
         self.frame = self.frame.saturating_add(1);
@@ -109,6 +130,61 @@ impl BlessingState {
             .ok_or_else(|| rt_err("blessing terminal is unavailable"))?;
         terminal.size().map(|r| (r.width, r.height)).map_err(rt_err)
     }
+}
+
+fn textarea_from_text(text: &str) -> TextArea<'static> {
+    let mut lines: Vec<String> = text.split('\n').map(ToOwned::to_owned).collect();
+    if lines.is_empty() {
+        lines.push(String::new());
+    }
+    let mut textarea = TextArea::new(lines);
+    textarea.move_cursor(CursorMove::Bottom);
+    textarea.move_cursor(CursorMove::End);
+    textarea.set_cursor_line_style(Style::default());
+    textarea.set_wrap_mode(WrapMode::WordOrGlyph);
+    textarea
+}
+
+fn textarea_text(textarea: &TextArea<'_>) -> String {
+    textarea.lines().join("\n")
+}
+
+fn inset_left(area: Rect, amount: u16) -> Rect {
+    if amount == 0 || area.width <= amount {
+        return area;
+    }
+    Rect {
+        x: area.x.saturating_add(amount),
+        y: area.y,
+        width: area.width - amount,
+        height: area.height,
+    }
+}
+
+fn render_textarea_placeholder(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    widget: &Table,
+) -> Result<bool> {
+    let placeholder: String = widget.get("placeholder").unwrap_or_default();
+    if placeholder.is_empty() {
+        return Ok(false);
+    }
+
+    let style = parse_style(widget.get("placeholder_style").ok())?;
+    let cursor_style = parse_style(widget.get("cursor_style").ok())?;
+    let mut chars = placeholder.chars();
+    let Some(first) = chars.next() else {
+        return Ok(false);
+    };
+
+    let rest: String = chars.collect();
+    let line = Line::from(vec![
+        Span::styled(first.to_string(), cursor_style),
+        Span::styled(rest, style),
+    ]);
+    frame.render_widget(Paragraph::new(Text::from(line)), area);
+    Ok(true)
 }
 
 impl Drop for BlessingState {
@@ -308,7 +384,51 @@ fn build_block(spec: Option<Table>) -> Option<Block<'static>> {
     Some(block)
 }
 
-fn render_widget(frame: &mut ratatui::Frame, area: Rect, widget: Table) -> Result<()> {
+fn parse_wrap_mode(value: Option<String>) -> WrapMode {
+    match value.as_deref() {
+        Some("none") => WrapMode::None,
+        Some("word") => WrapMode::Word,
+        Some("glyph") => WrapMode::Glyph,
+        _ => WrapMode::WordOrGlyph,
+    }
+}
+
+fn configure_textarea(textarea: &mut TextArea<'static>, widget: &Table) -> Result<()> {
+    textarea.set_style(parse_style(widget.get("style").ok())?);
+    textarea.set_cursor_line_style(parse_style(widget.get("cursor_line_style").ok())?);
+    textarea.set_cursor_style(parse_style(widget.get("cursor_style").ok())?);
+    textarea.set_alignment(parse_alignment(widget.get("align").ok()));
+    textarea.set_wrap_mode(parse_wrap_mode(widget.get("wrap_mode").ok()));
+
+    if let Some(block) = build_block(widget.get("block").ok()) {
+        textarea.set_block(block);
+    } else {
+        textarea.remove_block();
+    }
+
+    let placeholder: String = widget.get("placeholder").unwrap_or_default();
+    textarea.set_placeholder_text(placeholder);
+    textarea.set_placeholder_style(parse_style(widget.get("placeholder_style").ok())?);
+
+    if let Ok(mask) = widget.get::<String>("mask") {
+        if let Some(mask) = mask.chars().next() {
+            textarea.set_mask_char(mask);
+        } else {
+            textarea.clear_mask_char();
+        }
+    } else {
+        textarea.clear_mask_char();
+    }
+
+    Ok(())
+}
+
+fn render_widget(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    widget: Table,
+    textarea: &mut TextArea<'static>,
+) -> Result<()> {
     let kind: String = widget.get("kind").unwrap_or_else(|_| "paragraph".into());
     let block = build_block(widget.get("block").ok());
     let style = parse_style(widget.get("style").ok())?;
@@ -409,6 +529,19 @@ fn render_widget(frame: &mut ratatui::Frame, area: Rect, widget: Table) -> Resul
             }
             frame.render_widget(tabs, area);
         }
+        "textarea" => {
+            configure_textarea(textarea, &widget)?;
+            let content_padding = widget.get::<u16>("content_padding_left").unwrap_or(1);
+            if textarea.is_empty() {
+                let area = inset_left(area, content_padding);
+                if !render_textarea_placeholder(frame, area, &widget)? {
+                    textarea.set_placeholder_text("");
+                    frame.render_widget(&*textarea, area);
+                }
+            } else {
+                frame.render_widget(&*textarea, inset_left(area, content_padding));
+            }
+        }
         _ => {}
     }
 
@@ -432,13 +565,18 @@ fn render_widget(frame: &mut ratatui::Frame, area: Rect, widget: Table) -> Resul
     Ok(())
 }
 
-fn render_spec(frame: &mut ratatui::Frame, area: Rect, spec: Value) -> Result<()> {
+fn render_spec(
+    frame: &mut ratatui::Frame,
+    area: Rect,
+    spec: Value,
+    textarea: &mut TextArea<'static>,
+) -> Result<()> {
     if let Value::Table(t) = spec {
         if t.contains_key("kind")? {
-            render_widget(frame, area, t)?;
+            render_widget(frame, area, t, textarea)?;
         } else {
             for entry in t.sequence_values::<Value>() {
-                render_spec(frame, area, entry?)?;
+                render_spec(frame, area, entry?, textarea)?;
             }
         }
     }
@@ -463,8 +601,7 @@ fn render_node(
     frame: &mut ratatui::Frame,
     node: Table,
     area: Rect,
-    input: &str,
-    frame_no: u64,
+    state: &mut RenderState<'_>,
     path: &str,
 ) -> Result<()> {
     let area = node_area(&node, area);
@@ -475,15 +612,15 @@ fn render_node(
         ctx.set("y", area.y)?;
         ctx.set("width", area.width)?;
         ctx.set("height", area.height)?;
-        ctx.set("input", input)?;
-        ctx.set("frame", frame_no)?;
+        ctx.set("input", state.input)?;
+        ctx.set("frame", state.frame_no)?;
         ctx.set("path", path)?;
         if let Ok(id) = node.get::<String>("id") {
             ctx.set("id", id)?;
         }
 
         let spec: Value = render_fn.call(ctx)?;
-        render_spec(frame, area, spec)?;
+        render_spec(frame, area, spec, state.textarea)?;
     }
 
     let children: Option<Table> = node.get("children").ok();
@@ -506,7 +643,7 @@ fn render_node(
             *chunks.last().unwrap_or(&area)
         };
         let child_path = format!("{path}.{idx}");
-        render_node(lua, frame, child, chunk, input, frame_no, &child_path)?;
+        render_node(lua, frame, child, chunk, state, &child_path)?;
     }
 
     Ok(())
@@ -533,6 +670,57 @@ fn key_to_name(code: &KeyCode) -> String {
         KeyCode::Char(c) => c.to_string(),
         _ => "unknown".into(),
     }
+}
+
+fn textarea_key(code: &KeyCode) -> Key {
+    match code {
+        KeyCode::Backspace => Key::Backspace,
+        KeyCode::Enter => Key::Enter,
+        KeyCode::Left => Key::Left,
+        KeyCode::Right => Key::Right,
+        KeyCode::Up => Key::Up,
+        KeyCode::Down => Key::Down,
+        KeyCode::Home => Key::Home,
+        KeyCode::End => Key::End,
+        KeyCode::PageUp => Key::PageUp,
+        KeyCode::PageDown => Key::PageDown,
+        KeyCode::Tab | KeyCode::BackTab => Key::Tab,
+        KeyCode::Delete => Key::Delete,
+        KeyCode::Esc => Key::Esc,
+        KeyCode::F(n) => Key::F(*n),
+        KeyCode::Char(c) => Key::Char(*c),
+        _ => Key::Null,
+    }
+}
+
+fn textarea_input_from_key(key: &KeyEvent) -> Input {
+    Input {
+        key: textarea_key(&key.code),
+        ctrl: key.modifiers.contains(KeyModifiers::CONTROL),
+        alt: key.modifiers.contains(KeyModifiers::ALT),
+        shift: key.modifiers.contains(KeyModifiers::SHIFT) || matches!(key.code, KeyCode::BackTab),
+    }
+}
+
+fn should_edit_textarea(key: &KeyEvent, multiline: bool) -> bool {
+    if key.kind != KeyEventKind::Press {
+        return false;
+    }
+
+    if key.modifiers.contains(KeyModifiers::CONTROL) && matches!(key.code, KeyCode::Char('c' | 'd'))
+    {
+        return false;
+    }
+
+    if matches!(key.code, KeyCode::Esc) {
+        return false;
+    }
+
+    if matches!(key.code, KeyCode::Enter) {
+        return multiline && key.modifiers.contains(KeyModifiers::SHIFT);
+    }
+
+    true
 }
 
 fn key_event_table(lua: &Lua, key: &KeyEvent) -> Result<Table> {
@@ -590,10 +778,11 @@ impl UserData for BlessingState {
 
         methods.add_method_mut("set_input", |_, this, input: String| {
             this.input = input;
+            this.textarea = textarea_from_text(&this.input);
             Ok(())
         });
 
-        methods.add_method("input", |_, this, ()| Ok(this.input.clone()));
+        methods.add_method("input", |_, this, ()| Ok(textarea_text(&this.textarea)));
 
         methods.add_method_mut("size", |_, this, ()| this.size());
 
@@ -622,6 +811,28 @@ impl UserData for BlessingState {
             Ok(Value::Nil)
         });
 
+        methods.add_method_mut(
+            "read_textarea_key",
+            |lua, this, (timeout_ms, multiline): (Option<u64>, Option<bool>)| {
+                let timeout = Duration::from_millis(timeout_ms.unwrap_or(0));
+                if !event::poll(timeout).map_err(rt_err)? {
+                    return Ok(Value::Nil);
+                }
+                let ev = event::read().map_err(rt_err)?;
+                if let Event::Key(key) = ev {
+                    if key.kind != KeyEventKind::Press {
+                        return Ok(Value::Nil);
+                    }
+                    if should_edit_textarea(&key, multiline.unwrap_or(false)) {
+                        this.textarea.input(textarea_input_from_key(&key));
+                        this.input = textarea_text(&this.textarea);
+                    }
+                    return Ok(Value::Table(key_event_table(lua, &key)?));
+                }
+                Ok(Value::Table(event_table(lua, ev)?))
+            },
+        );
+
         methods.add_method_mut("finish", |_, this, ()| {
             this.shutdown_terminal();
             Ok(())
@@ -630,31 +841,38 @@ impl UserData for BlessingState {
         methods.add_method_mut("read_line", |lua, this, ()| {
             this.render(lua)?;
             this.input.clear();
+            this.textarea = textarea_from_text("");
 
             loop {
                 if event::poll(Duration::from_millis(50)).map_err(rt_err)? {
                     match event::read().map_err(rt_err)? {
                         Event::Key(key) if key.kind == KeyEventKind::Press => match key.code {
-                            KeyCode::Char(c) => {
-                                this.input.push(c);
-                                this.render(lua)?;
-                            }
-                            KeyCode::Backspace => {
-                                this.input.pop();
-                                this.render(lua)?;
-                            }
                             KeyCode::Enter => {
-                                let line = this.input.clone();
+                                if key.modifiers.contains(KeyModifiers::SHIFT) {
+                                    this.textarea.input(textarea_input_from_key(&key));
+                                    this.input = textarea_text(&this.textarea);
+                                    this.render(lua)?;
+                                    continue;
+                                }
+                                let line = textarea_text(&this.textarea);
                                 this.input.clear();
+                                this.textarea = textarea_from_text("");
                                 this.render(lua)?;
                                 return Ok(line);
                             }
                             KeyCode::Esc => {
                                 this.input.clear();
+                                this.textarea = textarea_from_text("");
                                 this.render(lua)?;
                                 return Ok(String::new());
                             }
-                            _ => {}
+                            _ => {
+                                if should_edit_textarea(&key, true) {
+                                    this.textarea.input(textarea_input_from_key(&key));
+                                    this.input = textarea_text(&this.textarea);
+                                    this.render(lua)?;
+                                }
+                            }
                         },
                         Event::Resize(_, _) => {
                             this.render(lua)?;

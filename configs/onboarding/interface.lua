@@ -103,10 +103,10 @@ function M.new(opts)
     local ui = self
     opts = opts or {}
     local max_content_width = 48
+    local input_indent = 2
     local term_width = 80
     local term_height = 24
     local visible_input = input
-    local input_len = text_len(input)
     local input_style = { fg = ui.theme.ui.text, bold = true }
 
     if ui.core then
@@ -139,6 +139,7 @@ function M.new(opts)
     local question_text = "· " .. question
     local vertical_options = opts.direction == "vertical"
     local input_text
+    local width_input_text
     if options then
       if vertical_options then
         local option_lines = {}
@@ -146,18 +147,22 @@ function M.new(opts)
           option_lines[#option_lines + 1] = option
         end
         input_text = table.concat(option_lines, "\n")
+        width_input_text = input_text
       else
         input_text = table.concat(options, "   ")
+        width_input_text = input_text
       end
     else
       input_text = visible_input
+      width_input_text = placeholder or ""
     end
     local content_width = math.min(max_content_width, math.max(
       1,
       max_line_width(history_lines),
       text_len(question_text),
-      text_len(input_text)
+      text_len(width_input_text) + input_indent
     ))
+    local input_width = math.max(1, content_width - input_indent)
 
     local history_height = 0
     for _, line in ipairs(history_lines) do
@@ -168,15 +173,13 @@ function M.new(opts)
     end
 
     local question_height = math.max(1, wrapped_lines(question_text, content_width))
-    local input_height = vertical_options and #options or math.max(1, wrapped_lines(input_text, content_width))
+    local input_height = vertical_options and #options or math.max(1, wrapped_lines(input_text, input_width))
     local between_history_height = history_height > 0 and 1 or 0
     local content_height = history_height + between_history_height + question_height + input_height
     local left_width = math.max(0, math.floor((term_width - content_width) / 2))
     local right_width = math.max(0, term_width - left_width - content_width)
     local top_height = math.max(0, math.floor((term_height - content_height) / 2))
     local bottom_height = math.max(0, term_height - top_height - content_height)
-    local cursor_x = input_len % content_width
-    local cursor_y = math.floor(input_len / content_width)
     local show_cursor = opts.show_cursor ~= false and not options
 
     local content_constraints = {}
@@ -290,26 +293,44 @@ function M.new(opts)
           end
 
           return {
-            kind = "paragraph",
-            text = visible_input,
-            wrap = true,
+            kind = "textarea",
+            placeholder = input == "" and (placeholder or "") or "",
+            placeholder_style = { fg = ui.theme.ui.subtle, bg = ui.theme.ui.background },
+            wrap_mode = "word_or_glyph",
+            content_padding_left = 0,
+            mask = secret and "*" or nil,
             style = {
               fg = input_style.fg,
               bg = ui.theme.ui.background,
               bold = input_style.bold,
             },
-            cursor = show_cursor,
-            cursor_x = cursor_x,
-            cursor_y = cursor_y,
-            cursor_offset_x = 0,
-            cursor_offset_y = 0,
+            cursor_style = show_cursor and {
+              fg = ui.theme.ui.background,
+              bg = ui.theme.ui.cursor,
+            } or {
+              fg = input_style.fg,
+              bg = ui.theme.ui.background,
+            },
           }
         end,
       }
     end
 
     content_constraints[#content_constraints + 1] = "length:" .. tostring(input_height)
-    content_children[#content_children + 1] = input_child
+    content_children[#content_children + 1] = {
+      id = "input_row",
+      direction = "horizontal",
+      constraints = {
+        "length:" .. tostring(input_indent),
+        "length:" .. tostring(input_width),
+        "min:0",
+      },
+      children = {
+        { id = "input_indent" },
+        input_child,
+        { id = "input_row_fill" },
+      },
+    }
 
     return {
       id = "root",
@@ -382,27 +403,31 @@ function M.new(opts)
     end
 
     local value = opts.default or ""
+    self.core:set_input(value)
     while true do
-      self.core:set_input(value)
       self.core:set_layout(self:layout(question, value, opts.placeholder, nil, nil, opts.secret))
       self.core:render()
-      local key = self.core:read_key(100)
+      local key = self.core:read_textarea_key(100, opts.multiline == true)
       if key then
         if is_abort_key(key) then
           error("onboarding aborted", 0)
         end
         if key.name == "enter" then
-          if value == "" then
-            value = opts.default or ""
+          if opts.multiline == true and key.shift then
+            value = self.core:input()
+          else
+            value = self.core:input()
+            if value == "" then
+              value = opts.default or ""
+            end
+            self:push(question, value, opts.secret)
+            return value
           end
-          self:push(question, value, opts.secret)
-          return value
-        elseif key.name == "backspace" then
-          value = value:sub(1, -2)
         elseif key.name == "esc" then
           value = opts.default or ""
-        elseif key.char then
-          value = value .. key.char
+          self.core:set_input(value)
+        else
+          value = self.core:input()
         end
       end
     end
